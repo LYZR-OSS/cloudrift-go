@@ -1,0 +1,36 @@
+# Binaries and build artifacts
+*.exe
+*.exe~
+*.dll
+*.so
+*.dylib
+/bin/
+/dist/
+
+# Test and coverage output
+*.test
+*.out
+coverage.html
+coverage.txt
+
+# Go workspace files (local multi-module dev, not for sharing)
+go.work
+go.work.sum
+
+# Environment / local config
+.env
+.env.*
+*.local
+
+# Vendored dependencies (modules are fetched via go.mod; uncomment if you vendor intentionally)
+vendor/
+
+# Editor and OS noise
+.idea/
+.vscode/
+*.swp
+*.swo
+.DS_Store
+
+# Claude Code local settings
+.claude/settings.local.json
