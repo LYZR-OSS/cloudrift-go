@@ -20,7 +20,7 @@ Cloud-agnostic abstraction for **storage**, **messaging**, **document databases*
 ## Install
 
 ```bash
-go get github.com/lyzr-ai/cloudrift-go
+go get github.com/NeuralgoLyzr/cloudrift-go
 ```
 
 Go 1.23+. Import only the categories you use — Go links only what you import, so a service using just the cache never pulls AWS/Azure SDK code into its binary.
@@ -32,7 +32,7 @@ Go 1.23+. Import only the categories you use — Go links only what you import, 
 Every backend is constructed via a factory function and held for the lifetime of the service. Reuse one instance per resource — the underlying client is connection-pooled.
 
 ```go
-import "github.com/lyzr-ai/cloudrift-go/storage"
+import "github.com/NeuralgoLyzr/cloudrift-go/storage"
 
 // Construct once at startup
 st, err := storage.New(ctx, "s3", storage.Config{
@@ -111,7 +111,7 @@ err = st.Close(ctx)
 ## Messaging
 
 ```go
-import "github.com/lyzr-ai/cloudrift-go/messaging"
+import "github.com/NeuralgoLyzr/cloudrift-go/messaging"
 
 // AWS SQS
 q, err := messaging.New(ctx, "sqs", messaging.Config{
@@ -149,7 +149,7 @@ err = q.Close(ctx)
 ## Document Database
 
 ```go
-import "github.com/lyzr-ai/cloudrift-go/document"
+import "github.com/NeuralgoLyzr/cloudrift-go/document"
 
 // AWS DocumentDB (MongoDB-compatible)
 db, err := document.New(ctx, "documentdb", document.Config{
@@ -190,7 +190,7 @@ err = db.Close(ctx)
 ## Cache
 
 ```go
-import "github.com/lyzr-ai/cloudrift-go/cache"
+import "github.com/NeuralgoLyzr/cloudrift-go/cache"
 
 // Self-hosted Redis
 c, err := cache.New(ctx, "redis", "from_url", cache.Config{URL: "redis://localhost:6379/0"})
@@ -243,7 +243,7 @@ err = c.Close(ctx)
 ## Secrets
 
 ```go
-import "github.com/lyzr-ai/cloudrift-go/secrets"
+import "github.com/NeuralgoLyzr/cloudrift-go/secrets"
 
 sm, err := secrets.New(ctx, "aws_secrets_manager", secrets.Config{Region: "us-east-1"}) // IAM
 kv, err := secrets.New(ctx, "azure_keyvault", secrets.Config{
@@ -261,7 +261,7 @@ names, err := sm.ListSecrets(ctx, "db-")
 ## Pub/Sub
 
 ```go
-import "github.com/lyzr-ai/cloudrift-go/pubsub"
+import "github.com/NeuralgoLyzr/cloudrift-go/pubsub"
 
 ps, err := pubsub.New(ctx, "sns", pubsub.Config{Region: "us-east-1"})
 ps, err := pubsub.New(ctx, "azure_eventgrid", pubsub.Config{
@@ -281,7 +281,7 @@ ids, err := ps.PublishBatch(ctx, topicARN, []pubsub.BatchMessage{
 All backends translate provider-native errors into one hierarchy under `core`, built on wrapped sentinel errors — match with `errors.Is` at any level:
 
 ```go
-import "github.com/lyzr-ai/cloudrift-go/core"
+import "github.com/NeuralgoLyzr/cloudrift-go/core"
 
 data, err := st.Download(ctx, "missing.txt")
 switch {

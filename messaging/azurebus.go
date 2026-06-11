@@ -14,7 +14,7 @@ import (
 	"github.com/Azure/azure-sdk-for-go/sdk/messaging/azservicebus"
 	"github.com/Azure/azure-sdk-for-go/sdk/messaging/azservicebus/admin"
 
-	"github.com/lyzr-ai/cloudrift-go/core"
+	"github.com/NeuralgoLyzr/cloudrift-go/core"
 )
 
 // AzureServiceBusBackend is the Azure Service Bus messaging backend.

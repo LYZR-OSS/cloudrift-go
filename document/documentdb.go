@@ -13,7 +13,7 @@ import (
 	"go.mongodb.org/mongo-driver/v2/mongo/options"
 	"go.mongodb.org/mongo-driver/v2/mongo/readpref"
 
-	"github.com/lyzr-ai/cloudrift-go/core"
+	"github.com/NeuralgoLyzr/cloudrift-go/core"
 )
 
 // AWSDocumentDBBackend is the AWS DocumentDB (MongoDB-compatible) backend,

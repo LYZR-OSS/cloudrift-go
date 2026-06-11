@@ -11,7 +11,7 @@ import (
 	"fmt"
 	"iter"
 
-	"github.com/lyzr-ai/cloudrift-go/core"
+	"github.com/NeuralgoLyzr/cloudrift-go/core"
 )
 
 // IndexKey is one field of a compound index. Order is 1 (ascending) or -1

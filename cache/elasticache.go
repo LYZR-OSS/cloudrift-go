@@ -13,7 +13,7 @@ import (
 	"github.com/aws/aws-sdk-go-v2/credentials"
 	"github.com/redis/go-redis/v9"
 
-	"github.com/lyzr-ai/cloudrift-go/core"
+	"github.com/NeuralgoLyzr/cloudrift-go/core"
 )
 
 // AWSElastiCacheBackend is the cache backend for AWS ElastiCache (Redis).

@@ -9,7 +9,7 @@ import (
 	"context"
 	"fmt"
 
-	"github.com/lyzr-ai/cloudrift-go/core"
+	"github.com/NeuralgoLyzr/cloudrift-go/core"
 )
 
 // Backend is the provider-neutral secret management interface.

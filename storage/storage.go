@@ -12,7 +12,7 @@ import (
 	"iter"
 	"time"
 
-	"github.com/lyzr-ai/cloudrift-go/core"
+	"github.com/NeuralgoLyzr/cloudrift-go/core"
 )
 
 // Metadata describes an object (the result of GetMetadata).

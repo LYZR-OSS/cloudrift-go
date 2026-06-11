@@ -5,7 +5,7 @@ import (
 	"errors"
 	"testing"
 
-	"github.com/lyzr-ai/cloudrift-go/core"
+	"github.com/NeuralgoLyzr/cloudrift-go/core"
 )
 
 func TestNewUnknownProvider(t *testing.T) {

@@ -1,4 +1,4 @@
-module github.com/lyzr-ai/cloudrift-go
+module github.com/NeuralgoLyzr/cloudrift-go
 
 go 1.25.6
 
