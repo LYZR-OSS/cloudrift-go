@@ -16,7 +16,6 @@ func TestHierarchy(t *testing.T) {
 		{"storage/permission", ErrStoragePermission, ErrStorage},
 		{"messaging/queue-not-found", ErrQueueNotFound, ErrMessaging},
 		{"messaging/send", ErrMessageSend, ErrMessaging},
-		{"document/not-found", ErrDocumentNotFound, ErrDocument},
 		{"document/connection", ErrDocumentConnection, ErrDocument},
 		{"cache/connection", ErrCacheConnection, ErrCache},
 		{"cache/key-not-found", ErrCacheKeyNotFound, ErrCache},

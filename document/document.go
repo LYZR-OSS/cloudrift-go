@@ -1,110 +1,89 @@
-// Package document provides a provider-neutral, MongoDB-style interface over
-// cloud document databases: AWS DocumentDB (MongoDB-compatible) and Azure
-// Cosmos DB (Core/SQL API).
+// Package document is a connection factory for MongoDB-compatible cloud
+// document databases: AWS DocumentDB and Azure Cosmos DB (MongoDB API).
 //
-// Construct a backend once at service startup via New (or NewDocumentDB /
-// NewCosmos) and reuse it — the underlying client is connection-pooled.
+// New returns a configured *mongo.Client from the official MongoDB Go driver
+// regardless of provider — both providers speak the MongoDB wire protocol —
+// so the caller selects database and collection and uses the driver's native
+// API directly:
+//
+//	client, err := document.New("documentdb", document.Config{URI: "mongodb://..."})
+//	coll := client.Database("mydb").Collection("users")
+//	_, err = coll.InsertOne(ctx, bson.M{"name": "Alice"})
+//
+// The client is connection-pooled: construct once at service startup and
+// reuse. Lifecycle is caller-managed — call client.Disconnect(ctx) at
+// shutdown.
 package document
 
 import (
-	"context"
 	"fmt"
-	"iter"
+
+	"go.mongodb.org/mongo-driver/v2/mongo"
+	"go.mongodb.org/mongo-driver/v2/mongo/options"
 
 	"github.com/NeuralgoLyzr/cloudrift-go/core"
 )
-
-// IndexKey is one field of a compound index. Order is 1 (ascending) or -1
-// (descending), MongoDB-style.
-type IndexKey struct {
-	Field string
-	Order int
-}
-
-// Backend is the provider-neutral document database interface. Queries and
-// updates use MongoDB-style maps on both providers; the Cosmos backend
-// translates a supported subset to Cosmos SQL.
-type Backend interface {
-	// InsertOne inserts a document. Returns the inserted document ID.
-	InsertOne(ctx context.Context, collection string, document map[string]any) (string, error)
-	// InsertMany inserts multiple documents. Returns the inserted IDs.
-	InsertMany(ctx context.Context, collection string, documents []map[string]any) ([]string, error)
-	// FindOne returns the first document matching query, or (nil, nil) if
-	// none matches.
-	FindOne(ctx context.Context, collection string, query map[string]any) (map[string]any, error)
-	// Find returns documents matching query with pagination.
-	Find(ctx context.Context, collection string, query map[string]any, limit, skip int64) ([]map[string]any, error)
-	// FindIter yields documents matching query lazily (cursor-based).
-	FindIter(ctx context.Context, collection string, query map[string]any) iter.Seq2[map[string]any, error]
-	// UpdateOne updates the first document matching query. Returns the
-	// modified count.
-	UpdateOne(ctx context.Context, collection string, query, update map[string]any) (int64, error)
-	// UpdateMany updates all documents matching query. Returns the modified count.
-	UpdateMany(ctx context.Context, collection string, query, update map[string]any) (int64, error)
-	// DeleteOne deletes the first document matching query. Returns the deleted count.
-	DeleteOne(ctx context.Context, collection string, query map[string]any) (int64, error)
-	// DeleteMany deletes all documents matching query. Returns the deleted count.
-	DeleteMany(ctx context.Context, collection string, query map[string]any) (int64, error)
-	// Count counts documents matching query (nil counts all).
-	Count(ctx context.Context, collection string, query map[string]any) (int64, error)
-	// CreateIndex creates an index. Returns the index name.
-	CreateIndex(ctx context.Context, collection string, keys []IndexKey, unique bool) (string, error)
-	// Aggregate runs an aggregation pipeline. The Cosmos backend supports the
-	// $match, $count, $sort, $project, $limit, and $skip stages.
-	Aggregate(ctx context.Context, collection string, pipeline []map[string]any) ([]map[string]any, error)
-	// UpsertOne inserts or updates a document. Returns the document ID.
-	UpsertOne(ctx context.Context, collection string, query, update map[string]any) (string, error)
-	// HealthCheck returns true if the database is reachable (never errors).
-	HealthCheck(ctx context.Context) bool
-	// Close releases the underlying client and sockets.
-	Close(ctx context.Context) error
-}
 
 // Config carries the union of provider options. Only the fields relevant to
 // the chosen provider are read; the factory routes to the appropriate auth
 // method based on which credential fields are set.
 type Config struct {
-	Database string
-
 	// AWS DocumentDB (MongoDB-compatible).
 	URI            string // full MongoDB URI (most flexible)
-	Host           string
-	Port           int
+	Host           string // cluster endpoint hostname
+	Port           int    // 0 = provider default (DocumentDB 27017, Cosmos 10255)
 	Username       string
 	Password       string
-	TLS            *bool  // nil = true for DocumentDB credentials auth
+	TLS            *bool  // nil = true (required for AWS DocumentDB)
 	TLSCAFile      string // CA certificate bundle (PEM)
 	TLSCertKeyFile string // combined client key + certificate PEM (mTLS)
-	MaxPoolSize    uint64 // 0 = default (100)
-	MinPoolSize    uint64
 
-	// Azure Cosmos DB (Core/SQL API).
-	ConnectionString string
-	URL              string // https://<account>.documents.azure.com:443/
-	AccountKey       string
-	PartitionKey     string // partition key path, default "/id"
-	TenantID         string
-	ClientID         string // service principal app ID, or user-assigned MI client ID
-	ClientSecret     string
+	// Azure Cosmos DB (MongoDB API). Key-based auth only: Cosmos for
+	// MongoDB (RU) does not accept Azure AD tokens at the wire-protocol
+	// layer.
+	ConnectionString string // Mongo-format URI from the Cosmos portal
+	Account          string // account name (<account>.mongo.cosmos.azure.com)
+	AccountKey       string // primary or secondary account key
+	AppName          string // appName URI parameter; default "@<account>@"
+
+	// Connection pool (both providers).
+	MaxPoolSize uint64 // 0 = default (100)
+	MinPoolSize uint64
 }
 
-// New instantiates a document database backend.
+// New builds a *mongo.Client for the given provider.
 //
 // provider is "documentdb" or "cosmos". The auth method is inferred from
 // which credential fields are set, exactly as in the Python library:
 //
-//	New(ctx, "documentdb", Config{URI: "mongodb://...", Database: "mydb"})
-//	New(ctx, "documentdb", Config{Host: "...", Port: 27017, Username: "u",
-//	    Password: "p", Database: "mydb"})
-//	New(ctx, "cosmos", Config{ConnectionString: "...", Database: "mydb"})
-//	New(ctx, "cosmos", Config{URL: "...", AccountKey: "...", Database: "mydb"})
-func New(ctx context.Context, provider string, cfg Config) (Backend, error) {
+//	New("documentdb", Config{URI: "mongodb://..."})
+//	New("documentdb", Config{Host: "...", Port: 27017, Username: "u", Password: "p"})
+//	New("documentdb", Config{Host: "...", Port: 27017, Username: "u", Password: "p",
+//	    TLSCertKeyFile: "/path/to/client.pem"})
+//	New("cosmos", Config{ConnectionString: "mongodb://..."})
+//	New("cosmos", Config{Account: "myacct", AccountKey: "..."})
+func New(provider string, cfg Config) (*mongo.Client, error) {
 	switch provider {
 	case "documentdb":
-		return NewDocumentDB(ctx, cfg)
+		return NewDocumentDB(cfg)
 	case "cosmos":
 		return NewCosmos(cfg)
 	}
 	return nil, fmt.Errorf("%w: unknown document DB provider %q (choose 'documentdb' or 'cosmos')",
 		core.ErrDocument, provider)
+}
+
+// connect applies the shared pool options and constructs the client.
+// Like Motor, mongo.Connect does not dial; the first operation does.
+func connect(uri string, cfg Config) (*mongo.Client, error) {
+	maxPool := cfg.MaxPoolSize
+	if maxPool == 0 {
+		maxPool = 100
+	}
+	opts := options.Client().ApplyURI(uri).SetMaxPoolSize(maxPool).SetMinPoolSize(cfg.MinPoolSize)
+	client, err := mongo.Connect(opts)
+	if err != nil {
+		return nil, fmt.Errorf("%w: %w", core.ErrDocumentConnection, err)
+	}
+	return client, nil
 }

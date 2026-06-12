@@ -46,10 +46,10 @@ var (
 	ErrMessageSend   = fmt.Errorf("%w: message send failed", ErrMessaging)
 )
 
-// Document DB errors.
+// Document DB errors. The document package returns a native *mongo.Client,
+// so operation errors come from the MongoDB driver directly; only connection
+// construction is wrapped.
 var (
-	ErrDocumentNotFound   = fmt.Errorf("%w: document not found", ErrDocument)
-	ErrCollection         = fmt.Errorf("%w: collection error", ErrDocument)
 	ErrDocumentConnection = fmt.Errorf("%w: connection failed", ErrDocument)
 )
 

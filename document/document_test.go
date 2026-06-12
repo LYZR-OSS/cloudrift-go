@@ -9,60 +9,67 @@ import (
 )
 
 func TestNewUnknownProvider(t *testing.T) {
-	_, err := New(context.Background(), "dynamodb", Config{})
+	_, err := New("dynamodb", Config{})
 	if !errors.Is(err, core.ErrDocument) {
 		t.Fatalf("err = %v; want core.ErrDocument", err)
 	}
 }
 
-func TestBuildWhere(t *testing.T) {
-	where, params := buildWhere(map[string]any{"name": "Alice", "age": 30})
-	// Fields are sorted, so "age" binds @p0 and "name" binds @p1.
-	want := " WHERE c.age = @p0 AND c.name = @p1"
-	if where != want {
-		t.Fatalf("where = %q; want %q", where, want)
+func TestNewReturnsNativeClient(t *testing.T) {
+	// mongo.Connect is lazy (no dial), so a valid URI yields a usable client.
+	client, err := New("documentdb", Config{URI: "mongodb://localhost:27017"})
+	if err != nil {
+		t.Fatalf("New: %v", err)
 	}
-	if len(params) != 2 || params[0].Name != "@p0" || params[0].Value != 30 {
-		t.Fatalf("params = %+v", params)
+	if client == nil {
+		t.Fatal("client is nil")
 	}
-	if w, p := buildWhere(nil); w != "" || p != nil {
-		t.Fatalf("empty query: %q, %v", w, p)
-	}
-}
-
-func TestMergeUpdate(t *testing.T) {
-	doc := map[string]any{"id": "1", "name": "Alice", "age": 30}
-	merged := mergeUpdate(doc, map[string]any{"$set": map[string]any{"age": 31}})
-	if merged["age"] != 31 || merged["name"] != "Alice" || merged["id"] != "1" {
-		t.Fatalf("merged = %v", merged)
-	}
-	// Plain (non-$set) updates merge directly.
-	merged = mergeUpdate(doc, map[string]any{"age": 32})
-	if merged["age"] != 32 || merged["name"] != "Alice" {
-		t.Fatalf("merged = %v", merged)
-	}
-	// The original document is not mutated.
-	if doc["age"] != 30 {
-		t.Fatalf("doc mutated: %v", doc)
+	if err := client.Disconnect(context.Background()); err != nil {
+		t.Fatalf("Disconnect: %v", err)
 	}
 }
 
-func TestPrepareQueryConvertsObjectID(t *testing.T) {
-	q := prepareQuery(map[string]any{"_id": "507f1f77bcf86cd799439011"})
-	if _, ok := q["_id"].(string); ok {
-		t.Fatal("hex _id should be converted to bson.ObjectID")
+func TestDocumentDBURI(t *testing.T) {
+	// URI passthrough.
+	if got := documentDBURI(Config{URI: "mongodb://u:p@h:27017/?tls=true"}); got != "mongodb://u:p@h:27017/?tls=true" {
+		t.Fatalf("uri = %q", got)
 	}
-	// Non-hex strings stay as-is.
-	q = prepareQuery(map[string]any{"_id": "not-an-objectid"})
-	if q["_id"] != "not-an-objectid" {
-		t.Fatalf("_id = %v", q["_id"])
+	// URI + CA file appends the parameter.
+	got := documentDBURI(Config{URI: "mongodb://u:p@h:27017/?tls=true", TLSCAFile: "/ca.pem"})
+	if got != "mongodb://u:p@h:27017/?tls=true&tlsCAFile=%2Fca.pem" {
+		t.Fatalf("uri = %q", got)
+	}
+	// Credentials: TLS on by default, port defaults to 27017, password escaped.
+	got = documentDBURI(Config{Host: "h", Username: "u", Password: "p@ss"})
+	if got != "mongodb://u:p%40ss@h:27017/?tls=true" {
+		t.Fatalf("uri = %q", got)
+	}
+	// mTLS routes to tlsCertificateKeyFile.
+	got = documentDBURI(Config{Host: "h", Port: 27017, Username: "u", Password: "p",
+		TLSCertKeyFile: "/client.pem", TLSCAFile: "/ca.pem"})
+	if got != "mongodb://u:p@h:27017/?tls=true&tlsCAFile=%2Fca.pem&tlsCertificateKeyFile=%2Fclient.pem" {
+		t.Fatalf("uri = %q", got)
+	}
+	// TLS explicitly off yields a bare URI.
+	got = documentDBURI(Config{Host: "h", Port: 27018, Username: "u", Password: "p", TLS: core.Ptr(false)})
+	if got != "mongodb://u:p@h:27018/" {
+		t.Fatalf("uri = %q", got)
 	}
 }
 
-func TestWithIDGeneratesUniqueIDs(t *testing.T) {
-	a := withID(map[string]any{"v": 1})
-	b := withID(map[string]any{"v": 1})
-	if a["id"] == "" || a["id"] == b["id"] {
-		t.Fatalf("ids = %v, %v", a["id"], b["id"])
+func TestCosmosURI(t *testing.T) {
+	// Defaults: port 10255, appName "@<account>@", Cosmos-required params.
+	got := cosmosURI(Config{Account: "myacct", AccountKey: "k+y/=="})
+	want := "mongodb://myacct:k%2By%2F%3D%3D@myacct.mongo.cosmos.azure.com:10255/" +
+		"?ssl=true&replicaSet=globaldb&retryWrites=false&maxIdleTimeMS=120000&appName=%40myacct%40"
+	if got != want {
+		t.Fatalf("uri = %q; want %q", got, want)
+	}
+	// Custom port and app name.
+	got = cosmosURI(Config{Account: "a", AccountKey: "k", Port: 10256, AppName: "svc"})
+	want = "mongodb://a:k@a.mongo.cosmos.azure.com:10256/" +
+		"?ssl=true&replicaSet=globaldb&retryWrites=false&maxIdleTimeMS=120000&appName=svc"
+	if got != want {
+		t.Fatalf("uri = %q; want %q", got, want)
 	}
 }

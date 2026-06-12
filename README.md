@@ -148,42 +148,45 @@ err = q.Close(ctx)
 
 ## Document Database
 
+`document.New` is a connection factory: it returns a configured `*mongo.Client` from the official [MongoDB Go driver](https://pkg.go.dev/go.mongodb.org/mongo-driver/v2/mongo) regardless of provider — both AWS DocumentDB and Azure Cosmos DB (MongoDB API) speak the MongoDB wire protocol. You get the driver's full native API: typed decoding, transactions, bulk writes, change streams, aggregation.
+
 ```go
 import "github.com/NeuralgoLyzr/cloudrift-go/document"
 
 // AWS DocumentDB (MongoDB-compatible)
-db, err := document.New(ctx, "documentdb", document.Config{
+client, err := document.New("documentdb", document.Config{
     URI:       "mongodb://user:pass@cluster.docdb.amazonaws.com:27017/?tls=true",
-    Database:  "lyzr",
     TLSCAFile: "/etc/ssl/rds-ca-bundle.pem",
     MaxPoolSize: 200,
 })
+client, err := document.New("documentdb", document.Config{ // or host/port credentials
+    Host: "cluster.docdb.amazonaws.com", Port: 27017, Username: "u", Password: "p"})
+client, err := document.New("documentdb", document.Config{ // or mTLS
+    Host: "cluster.docdb.amazonaws.com", Port: 27017, Username: "u", Password: "p",
+    TLSCertKeyFile: "/etc/ssl/client.pem"})
 
-// Azure Cosmos DB (Core/SQL API)
-db, err := document.New(ctx, "cosmos", document.Config{ConnectionString: "...", Database: "lyzr"})
-db, err := document.New(ctx, "cosmos", document.Config{URL: "https://acct.documents.azure.com:443/",
-    AccountKey: "...", Database: "lyzr"})
+// Azure Cosmos DB (MongoDB API)
+client, err := document.New("cosmos", document.Config{ConnectionString: "mongodb://..."})
+client, err := document.New("cosmos", document.Config{Account: "myacct", AccountKey: "..."})
 ```
 
-**Operations** (MongoDB-style on both):
+**Operations** — the native driver API, identical on both providers:
 
 ```go
-id, err := db.InsertOne(ctx, "users", map[string]any{"name": "Alice", "age": 30})
-ids, err := db.InsertMany(ctx, "events", []map[string]any{{"v": 1}, {"v": 2}})
+import "go.mongodb.org/mongo-driver/v2/bson"
 
-doc, err := db.FindOne(ctx, "users", map[string]any{"name": "Alice"}) // nil, nil if missing
-docs, err := db.Find(ctx, "events", map[string]any{"v": 1}, 100, 0)
-for doc, err := range db.FindIter(ctx, "events", map[string]any{"v": 1}) { ... }
+coll := client.Database("lyzr").Collection("users")
 
-n, err := db.UpdateOne(ctx, "users", map[string]any{"_id": id},
-    map[string]any{"$set": map[string]any{"age": 31}})
-n, err = db.DeleteMany(ctx, "events", map[string]any{"v": 1})
-total, err := db.Count(ctx, "users", nil)
+res, err := coll.InsertOne(ctx, bson.M{"name": "Alice", "age": 30})
+err = coll.FindOne(ctx, bson.M{"name": "Alice"}).Decode(&user)
+cur, err := coll.Find(ctx, bson.M{"age": bson.M{"$gte": 18}})
+n, err := coll.UpdateOne(ctx, bson.M{"_id": res.InsertedID},
+    bson.M{"$set": bson.M{"age": 31}})
 
-err = db.Close(ctx)
+err = client.Disconnect(ctx) // lifecycle is caller-managed; call at shutdown
 ```
 
-> **Cosmos note:** queries support top-level field equality; `Aggregate` supports the `$match`, `$count`, `$sort`, `$project`, `$limit`, and `$skip` stages (translated to Cosmos SQL). Unsupported stages and unique indexes return `core.ErrNotImplemented`.
+> **Cosmos note:** key-based auth only (connection string or account + key) — Cosmos for MongoDB (RU) does not accept Azure AD tokens at the wire-protocol layer. `Account` + `AccountKey` builds the URI with the Cosmos-required parameters (`ssl`, `replicaSet=globaldb`, `retryWrites=false`).
 
 ---
 
@@ -291,7 +294,7 @@ case errors.Is(err, core.ErrCloudRift):       // any cloudrift error
 }
 ```
 
-Specific errors per category: `ErrObjectNotFound`/`ErrStoragePermission`, `ErrQueueNotFound`/`ErrMessageSend`, `ErrDocumentNotFound`/`ErrDocumentConnection`, `ErrCacheConnection`/`ErrCacheKeyNotFound`, `ErrSecretNotFound`/`ErrSecretPermission`, `ErrTopicNotFound`/`ErrPublish`. Operations a provider cannot honor return `core.ErrNotImplemented`.
+Specific errors per category: `ErrObjectNotFound`/`ErrStoragePermission`, `ErrQueueNotFound`/`ErrMessageSend`, `ErrDocumentConnection`, `ErrCacheConnection`/`ErrCacheKeyNotFound`, `ErrSecretNotFound`/`ErrSecretPermission`, `ErrTopicNotFound`/`ErrPublish`. Operations a provider cannot honor return `core.ErrNotImplemented`. The document package returns a native `*mongo.Client`, so operation errors come from the MongoDB driver directly.
 
 ---
 
