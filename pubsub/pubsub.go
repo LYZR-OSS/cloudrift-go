@@ -9,7 +9,7 @@ import (
 	"context"
 	"fmt"
 
-	"github.com/NeuralgoLyzr/cloudrift-go/core"
+	"github.com/LYZR-OSS/cloudrift-go/core"
 )
 
 // BatchMessage is one entry of PublishBatch.

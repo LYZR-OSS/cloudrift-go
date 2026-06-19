@@ -13,7 +13,7 @@ import (
 	"fmt"
 	"time"
 
-	"github.com/NeuralgoLyzr/cloudrift-go/core"
+	"github.com/LYZR-OSS/cloudrift-go/core"
 )
 
 // Message is a received queue message.

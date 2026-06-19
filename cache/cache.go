@@ -11,7 +11,7 @@ import (
 	"fmt"
 	"time"
 
-	"github.com/NeuralgoLyzr/cloudrift-go/core"
+	"github.com/LYZR-OSS/cloudrift-go/core"
 )
 
 // ExpireMode controls the conditional flags of Expire (Redis NX/XX).

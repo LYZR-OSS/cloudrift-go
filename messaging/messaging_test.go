@@ -6,7 +6,7 @@ import (
 	"regexp"
 	"testing"
 
-	"github.com/NeuralgoLyzr/cloudrift-go/core"
+	"github.com/LYZR-OSS/cloudrift-go/core"
 )
 
 func TestNewUnknownProvider(t *testing.T) {
