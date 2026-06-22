@@ -1,0 +1,102 @@
+name: CI/CD
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+# Needed by the release job to push the tag and create the GitHub Release.
+permissions:
+  contents: write
+
+jobs:
+  # Runs on every push to main AND on every PR — this is the gate before merge.
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+      - run: go build ./...
+      - run: go vet ./...
+      - run: go test ./...
+
+  # PR-only gate: fails the check unless VERSION is a valid semver that is
+  # strictly greater than the latest released tag. Forces every PR to carry a
+  # version bump before it can be merged (requires branch protection to enforce).
+  version-gate:
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          fetch-tags: true
+      - name: VERSION must be bumped above the latest release
+        run: |
+          set -euo pipefail
+          VERSION="$(tr -d '[:space:]' < VERSION)"
+
+          # Must be a clean semver: X.Y.Z (no leading v, no suffix).
+          if ! printf '%s' "$VERSION" | grep -Eq '^[0-9]+\.[0-9]+\.[0-9]+$'; then
+            echo "::error file=VERSION::VERSION ('$VERSION') is not a valid X.Y.Z semver."
+            exit 1
+          fi
+
+          LATEST="$(git tag --list 'v*' --sort=-v:refname | head -n1 | sed 's/^v//')"
+          if [ -z "$LATEST" ]; then
+            echo "No existing release tags — '$VERSION' accepted as the first release."
+            exit 0
+          fi
+
+          if [ "$VERSION" = "$LATEST" ]; then
+            echo "::error file=VERSION::VERSION ('$VERSION') was not bumped — it still equals the latest release v$LATEST."
+            exit 1
+          fi
+
+          SMALLEST="$(printf '%s\n%s\n' "$VERSION" "$LATEST" | sort -V | head -n1)"
+          if [ "$SMALLEST" = "$VERSION" ]; then
+            echo "::error file=VERSION::VERSION ('$VERSION') is lower than the latest release v$LATEST."
+            exit 1
+          fi
+
+          echo "OK: VERSION $VERSION > latest release v$LATEST."
+
+  # Runs ONLY on a real push to main (a merged PR fires this too, since a
+  # merge is a push). Reads VERSION; if no matching tag exists yet, it tags
+  # the commit and cuts a GitHub Release with auto-generated notes.
+  release:
+    needs: test
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          fetch-tags: true
+
+      - name: Read VERSION
+        id: ver
+        run: echo "version=$(tr -d '[:space:]' < VERSION)" >> "$GITHUB_OUTPUT"
+
+      - name: Check whether the tag already exists
+        id: check
+        run: |
+          if git rev-parse "v${{ steps.ver.outputs.version }}" >/dev/null 2>&1; then
+            echo "exists=true"  >> "$GITHUB_OUTPUT"
+            echo "Tag v${{ steps.ver.outputs.version }} already exists — nothing to release."
+          else
+            echo "exists=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Tag and release
+        if: steps.check.outputs.exists == 'false'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          TAG="v${{ steps.ver.outputs.version }}"
+          git tag "$TAG"
+          git push origin "$TAG"
+          gh release create "$TAG" --title "$TAG" --generate-notes
