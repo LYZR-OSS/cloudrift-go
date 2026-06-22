@@ -1,9 +1,9 @@
 # cloudrift-go
 
-Cloud-agnostic abstraction for **storage**, **messaging**, **document databases**, **cache**, **secrets**, and **pub/sub** — built for Lyzr microservices. The Go port of [cloudrift](../README.md) (Python).
+Cloud-agnostic abstraction for **storage**, **messaging**, **document databases**, **cache**, **secrets**, **pub/sub**, and **email** — built for Lyzr microservices. The Go port of [cloudrift](../README.md) (Python).
 
 - **Context-first.** Every operation takes a `context.Context` and is backed by native Go cloud SDKs (`aws-sdk-go-v2`, `azure-sdk-for-go`, `mongo-driver/v2`, `go-redis/v9`) — connection-pooled, no wrappers.
-- **Drop-in providers.** Same interface across AWS, Azure, and self-hosted backends. Swap `s3` ↔ `azure_blob` (or `sqs` ↔ `azure_bus`, `documentdb` ↔ `cosmos`, `redis` ↔ `elasticache` ↔ `azure_redis`) by changing one string.
+- **Drop-in providers.** Same interface across AWS, Azure, and self-hosted backends. Swap `s3` ↔ `azure_blob` (or `sqs` ↔ `azure_bus`, `documentdb` ↔ `cosmos`, `redis` ↔ `elasticache` ↔ `azure_redis`, `ses` ↔ `azure_acs` ↔ `smtp`) by changing one string.
 - **Multiple auth methods per provider.** Static keys, IAM roles, profiles, managed identity, service principals, SAS tokens, mTLS, IAM auth — pick what your microservice already has.
 
 | Category | Factory | AWS | Azure | Self-hosted |
@@ -12,8 +12,9 @@ Cloud-agnostic abstraction for **storage**, **messaging**, **document databases*
 | Messaging | `messaging.New` | `sqs` | `azure_bus` | — |
 | Document DB | `document.New` | `documentdb` | `cosmos` | — |
 | Cache | `cache.New` | `elasticache` | `azure_redis` | `redis` |
-| Secrets | `secrets.New` | `aws_secrets_manager` | `azure_keyvault` | — |
+| Secrets | `secrets.New` | `aws_secrets_manager` | `azure_keyvault` | `env` / `file` / `memory` |
 | Pub/Sub | `pubsub.New` | `sns` | `azure_eventgrid` | — |
+| Email | `email.New` | `ses` | `azure_acs` | `smtp` |
 
 ---
 
@@ -126,13 +127,23 @@ q, err := messaging.New(ctx, "azure_bus", messaging.Config{
 
 **Operations**:
 
+Bodies are **raw bytes** (binary-safe — JSON, OTLP protobuf, base64, anything), with optional string attributes (SQS MessageAttributes / Service Bus ApplicationProperties):
+
 ```go
-id, err := q.Send(ctx, map[string]any{"action": "process", "id": 42}, 0)
-ids, err := q.SendBatch(ctx, []map[string]any{{"n": 1}, {"n": 2}})
+// Raw bytes + attributes
+id, err := q.Send(ctx, []byte("…otlp bytes…"), map[string]string{"encoding": "otlp_proto"}, 0)
+ids, err := q.SendBatch(ctx, []messaging.OutgoingMessage{
+    {Body: []byte("a"), Attributes: map[string]string{"k": "v"}},
+    {Body: []byte("b")},
+})
+
+// JSON convenience for object payloads
+id, err = messaging.SendJSON(ctx, q, map[string]any{"action": "process", "id": 42}, nil, 0)
 
 msgs, err := q.Receive(ctx, 10, 20*time.Second) // long-poll
 for _, m := range msgs {
-    handleJob(m.Body)
+    handleJob(m.Body)            // []byte; m.Attributes is map[string]string
+    obj, _ := m.JSON()           // decode body as a JSON object when applicable
     err = q.Delete(ctx, m.ReceiptHandle)              // ack
     // or: q.DeadLetter(ctx, m.ReceiptHandle, "bad payload")
 }
@@ -141,6 +152,8 @@ depth, err := q.GetQueueDepth(ctx)
 err = q.Purge(ctx)
 err = q.Close(ctx)
 ```
+
+For cross-account access, set `Config.RoleARN` (+ optional `ExternalID`) on `messaging.New`/`storage.New` — the AWS client assumes the role via STS on top of the base credentials.
 
 > **Dead-lettering:** Azure Service Bus dead-letters natively. SQS has no per-message dead-letter API, so the backend emulates it: it re-sends the message body to the DLQ (from `Config.DLQURL` or the queue's RedrivePolicy) and deletes the original.
 
@@ -252,6 +265,12 @@ sm, err := secrets.New(ctx, "aws_secrets_manager", secrets.Config{Region: "us-ea
 kv, err := secrets.New(ctx, "azure_keyvault", secrets.Config{
     VaultURL: "https://myvault.vault.azure.net"}) // managed identity
 
+// Non-cloud backends — same interface, no secrets manager required (dev, on-prem, CI, tests):
+env, err := secrets.New(ctx, "env", secrets.Config{Prefix: "SECRET_"})        // read SECRET_<name> env vars
+file, err := secrets.New(ctx, "file", secrets.Config{FilePath: "/run/secrets.json"}) // JSON {name: value}
+mem, err := secrets.New(ctx, "memory", secrets.Config{                         // in-memory (alias "local")
+    Mapping: map[string]string{"db-password": "s3cret"}})
+
 val, err := sm.GetSecret(ctx, "db-password")
 cfg, err := sm.GetSecretJSON(ctx, "db-config")
 err = sm.SetSecret(ctx, "db-password", "s3cret")
@@ -279,6 +298,67 @@ ids, err := ps.PublishBatch(ctx, topicARN, []pubsub.BatchMessage{
 
 ---
 
+## Email
+
+```go
+import "github.com/LYZR-OSS/cloudrift-go/email"
+
+// AWS SES (SESv2)
+em, err := email.New(ctx, "ses", email.Config{
+    Region: "us-east-1", DefaultFrom: "noreply@example.com"})                  // IAM role / env
+em, err := email.New(ctx, "ses", email.Config{AWSAccessKeyID: "AKIA...",       // static keys
+    AWSSecretAccessKey: "...", Region: "us-east-1", DefaultFrom: "noreply@example.com"})
+em, err := email.New(ctx, "ses", email.Config{ProfileName: "dev",              // ~/.aws profile
+    Region: "us-east-1", DefaultFrom: "noreply@example.com"})
+
+// Azure Communication Services (talks to the ACS REST API; no Go SDK needed)
+em, err := email.New(ctx, "azure_acs", email.Config{                           // access-key signing
+    ConnectionString: "endpoint=https://x.communication.azure.com;accesskey=...",
+    DefaultFrom: "DoNotReply@example.com"})
+em, err := email.New(ctx, "azure_acs", email.Config{                           // managed identity
+    Endpoint: "https://x.communication.azure.com", DefaultFrom: "DoNotReply@example.com"})
+em, err := email.New(ctx, "azure_acs", email.Config{                           // service principal
+    Endpoint: "https://x.communication.azure.com", TenantID: "...",
+    ClientID: "...", ClientSecret: "...", DefaultFrom: "DoNotReply@example.com"})
+
+// Raw SMTP (SendGrid, Mailgun, Postmark, Office365, MailHog, ...)
+em, err := email.New(ctx, "smtp", email.Config{Host: "smtp.sendgrid.net",      // STARTTLS, port 587 (default)
+    Username: "apikey", Password: "...", DefaultFrom: "noreply@example.com"})
+em, err := email.New(ctx, "smtp", email.Config{Mode: "tls", Host: "smtp.example.com", // implicit TLS
+    Port: 465, Username: "user", Password: "pw", DefaultFrom: "noreply@example.com"})
+em, err := email.New(ctx, "smtp", email.Config{Mode: "plaintext",              // MailHog / Mailpit (dev)
+    Host: "localhost", Port: 1025, DefaultFrom: "noreply@example.test"})
+```
+
+**Operations** — same on every backend. Build an `EmailMessage`; `From` falls back to `Config.DefaultFrom` when empty, and at least one of `BodyText` / `BodyHTML` must be set:
+
+```go
+id, err := em.Send(ctx, email.EmailMessage{
+    To:       []string{"alice@example.com"},
+    Subject:  "Welcome",
+    BodyText: "Plain text body",
+    BodyHTML: "<p>HTML body</p>",
+    Cc:       []string{"bob@example.com"},
+    Bcc:      []string{"audit@example.com"}, // envelope-only, never in headers
+    ReplyTo:  []string{"support@example.com"},
+    Attachments: []email.Attachment{{
+        Filename: "welcome.pdf", Content: pdfBytes, ContentType: "application/pdf"}},
+    Headers: map[string]string{"X-Campaign": "welcome-v2"},
+})
+
+ids, err := em.SendBatch(ctx, []email.EmailMessage{ // loops Send by default
+    {To: []string{"alice@example.com"}, Subject: "hi",  BodyText: "hi"},
+    {To: []string{"bob@example.com"},   Subject: "hi2", BodyHTML: "<b>hi2</b>"},
+})
+
+ok := em.HealthCheck(ctx)
+err = em.Close(ctx)
+```
+
+> **Default sender.** Each backend takes a `DefaultFrom` in its config; calls that leave `EmailMessage.From` empty fall back to it. SES requires the sender (address or domain) to be verified; ACS requires the sending domain to be linked to the resource.
+
+---
+
 ## Errors
 
 All backends translate provider-native errors into one hierarchy under `core`, built on wrapped sentinel errors — match with `errors.Is` at any level:
@@ -294,7 +374,7 @@ case errors.Is(err, core.ErrCloudRift):       // any cloudrift error
 }
 ```
 
-Specific errors per category: `ErrObjectNotFound`/`ErrStoragePermission`, `ErrQueueNotFound`/`ErrMessageSend`, `ErrDocumentConnection`, `ErrCacheConnection`/`ErrCacheKeyNotFound`, `ErrSecretNotFound`/`ErrSecretPermission`, `ErrTopicNotFound`/`ErrPublish`. Operations a provider cannot honor return `core.ErrNotImplemented`. The document package returns a native `*mongo.Client`, so operation errors come from the MongoDB driver directly.
+Specific errors per category: `ErrObjectNotFound`/`ErrStoragePermission`, `ErrQueueNotFound`/`ErrMessageSend`, `ErrDocumentConnection`, `ErrCacheConnection`/`ErrCacheKeyNotFound`, `ErrSecretNotFound`/`ErrSecretPermission`, `ErrTopicNotFound`/`ErrPublish`, `ErrEmailSend`/`ErrRecipientRejected`/`ErrSenderUnverified`/`ErrEmailThrottled`. Operations a provider cannot honor return `core.ErrNotImplemented`. The document package returns a native `*mongo.Client`, so operation errors come from the MongoDB driver directly.
 
 ---
 
