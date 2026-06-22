@@ -32,6 +32,7 @@ var (
 	ErrCache     = fmt.Errorf("%w: cache", ErrCloudRift)
 	ErrSecret    = fmt.Errorf("%w: secret", ErrCloudRift)
 	ErrPubSub    = fmt.Errorf("%w: pubsub", ErrCloudRift)
+	ErrEmail     = fmt.Errorf("%w: email", ErrCloudRift)
 )
 
 // Storage errors.
@@ -69,6 +70,14 @@ var (
 var (
 	ErrTopicNotFound = fmt.Errorf("%w: topic not found", ErrPubSub)
 	ErrPublish       = fmt.Errorf("%w: publish failed", ErrPubSub)
+)
+
+// Email errors.
+var (
+	ErrEmailSend         = fmt.Errorf("%w: send failed", ErrEmail)
+	ErrRecipientRejected = fmt.Errorf("%w: recipient rejected", ErrEmail)
+	ErrSenderUnverified  = fmt.Errorf("%w: sender unverified", ErrEmail)
+	ErrEmailThrottled    = fmt.Errorf("%w: throttled", ErrEmail)
 )
 
 // Ptr returns a pointer to v. Useful for optional config fields like

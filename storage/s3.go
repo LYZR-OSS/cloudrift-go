@@ -14,7 +14,9 @@ import (
 	awshttp "github.com/aws/aws-sdk-go-v2/aws/transport/http"
 	awsconfig "github.com/aws/aws-sdk-go-v2/config"
 	"github.com/aws/aws-sdk-go-v2/credentials"
+	"github.com/aws/aws-sdk-go-v2/credentials/stscreds"
 	"github.com/aws/aws-sdk-go-v2/service/s3"
+	"github.com/aws/aws-sdk-go-v2/service/sts"
 	"github.com/aws/smithy-go"
 
 	"github.com/LYZR-OSS/cloudrift-go/core"
@@ -52,6 +54,14 @@ func NewS3(ctx context.Context, cfg Config) (*AWSS3Backend, error) {
 	awsCfg, err := awsconfig.LoadDefaultConfig(ctx, loadOpts...)
 	if err != nil {
 		return nil, fmt.Errorf("%w: %w", core.ErrStorage, err)
+	}
+	if cfg.RoleARN != "" {
+		awsCfg.Credentials = aws.NewCredentialsCache(stscreds.NewAssumeRoleProvider(
+			sts.NewFromConfig(awsCfg), cfg.RoleARN, func(o *stscreds.AssumeRoleOptions) {
+				if cfg.ExternalID != "" {
+					o.ExternalID = aws.String(cfg.ExternalID)
+				}
+			}))
 	}
 	client := s3.NewFromConfig(awsCfg, func(o *s3.Options) {
 		if cfg.EndpointURL != "" {

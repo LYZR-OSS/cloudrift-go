@@ -3,7 +3,6 @@ package messaging
 import (
 	"context"
 	"encoding/hex"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"sync"
@@ -97,11 +96,7 @@ func NewAzureServiceBus(cfg Config) (*AzureServiceBusBackend, error) {
 	return b, nil
 }
 
-func (b *AzureServiceBusBackend) Send(ctx context.Context, message map[string]any, delay time.Duration) (string, error) {
-	body, err := json.Marshal(message)
-	if err != nil {
-		return "", fmt.Errorf("%w: %w", core.ErrMessageSend, err)
-	}
+func (b *AzureServiceBusBackend) Send(ctx context.Context, body []byte, attributes map[string]string, delay time.Duration) (string, error) {
 	sender, err := b.client.NewSender(b.queueName, nil)
 	if err != nil {
 		return "", b.mapErr(err, core.ErrMessageSend)
@@ -109,7 +104,7 @@ func (b *AzureServiceBusBackend) Send(ctx context.Context, message map[string]an
 	defer sender.Close(ctx)
 
 	id := newID()
-	msg := &azservicebus.Message{Body: body, MessageID: &id}
+	msg := &azservicebus.Message{Body: body, MessageID: &id, ApplicationProperties: appProps(attributes)}
 	if delay > 0 {
 		t := time.Now().UTC().Add(delay)
 		msg.ScheduledEnqueueTime = &t
@@ -120,7 +115,7 @@ func (b *AzureServiceBusBackend) Send(ctx context.Context, message map[string]an
 	return id, nil
 }
 
-func (b *AzureServiceBusBackend) SendBatch(ctx context.Context, messages []map[string]any) ([]string, error) {
+func (b *AzureServiceBusBackend) SendBatch(ctx context.Context, messages []OutgoingMessage) ([]string, error) {
 	sender, err := b.client.NewSender(b.queueName, nil)
 	if err != nil {
 		return nil, b.mapErr(err, core.ErrMessageSend)
@@ -133,13 +128,9 @@ func (b *AzureServiceBusBackend) SendBatch(ctx context.Context, messages []map[s
 	}
 	ids := make([]string, 0, len(messages))
 	for _, m := range messages {
-		body, err := json.Marshal(m)
-		if err != nil {
-			return nil, fmt.Errorf("%w: %w", core.ErrMessageSend, err)
-		}
 		id := newID()
 		ids = append(ids, id)
-		if err := batch.AddMessage(&azservicebus.Message{Body: body, MessageID: &id}, nil); err != nil {
+		if err := batch.AddMessage(&azservicebus.Message{Body: m.Body, MessageID: &id, ApplicationProperties: appProps(m.Attributes)}, nil); err != nil {
 			return nil, fmt.Errorf("%w: %w", core.ErrMessageSend, err)
 		}
 	}
@@ -147,6 +138,19 @@ func (b *AzureServiceBusBackend) SendBatch(ctx context.Context, messages []map[s
 		return nil, b.mapErr(err, core.ErrMessageSend)
 	}
 	return ids, nil
+}
+
+// appProps converts a string attribute map into Service Bus
+// ApplicationProperties. Returns nil for an empty map.
+func appProps(attributes map[string]string) map[string]any {
+	if len(attributes) == 0 {
+		return nil
+	}
+	out := make(map[string]any, len(attributes))
+	for k, v := range attributes {
+		out[k] = v
+	}
+	return out
 }
 
 func (b *AzureServiceBusBackend) Receive(ctx context.Context, maxMessages int, waitTime time.Duration) ([]Message, error) {
@@ -180,10 +184,6 @@ func (b *AzureServiceBusBackend) Receive(ctx context.Context, maxMessages int, w
 		b.pending[token] = &sbPending{receiver: receiver, message: m}
 		tokens[token] = struct{}{}
 
-		var body map[string]any
-		if err := json.Unmarshal(m.Body, &body); err != nil {
-			return nil, fmt.Errorf("%w: decoding message body: %w", core.ErrMessaging, err)
-		}
 		attrs := map[string]string{}
 		if m.SequenceNumber != nil {
 			attrs["sequence_number"] = fmt.Sprint(*m.SequenceNumber)
@@ -191,9 +191,21 @@ func (b *AzureServiceBusBackend) Receive(ctx context.Context, maxMessages int, w
 		if m.EnqueuedTime != nil {
 			attrs["enqueued_time"] = m.EnqueuedTime.String()
 		}
+		// User attributes (ApplicationProperties) take priority over the
+		// system metadata above.
+		for k, v := range m.ApplicationProperties {
+			if v == nil {
+				continue
+			}
+			if s, ok := v.(string); ok {
+				attrs[k] = s
+			} else {
+				attrs[k] = fmt.Sprint(v)
+			}
+		}
 		messages = append(messages, Message{
 			ID:            m.MessageID,
-			Body:          body,
+			Body:          m.Body,
 			ReceiptHandle: token,
 			Attributes:    attrs,
 		})
