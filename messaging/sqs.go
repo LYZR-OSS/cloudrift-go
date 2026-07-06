@@ -13,8 +13,10 @@ import (
 	"github.com/aws/aws-sdk-go-v2/aws"
 	awsconfig "github.com/aws/aws-sdk-go-v2/config"
 	"github.com/aws/aws-sdk-go-v2/credentials"
+	"github.com/aws/aws-sdk-go-v2/credentials/stscreds"
 	"github.com/aws/aws-sdk-go-v2/service/sqs"
 	"github.com/aws/aws-sdk-go-v2/service/sqs/types"
+	"github.com/aws/aws-sdk-go-v2/service/sts"
 	"github.com/aws/smithy-go"
 
 	"github.com/LYZR-OSS/cloudrift-go/core"
@@ -60,6 +62,14 @@ func NewSQS(ctx context.Context, cfg Config) (*AWSSQSBackend, error) {
 	if err != nil {
 		return nil, fmt.Errorf("%w: %w", core.ErrMessaging, err)
 	}
+	if cfg.RoleARN != "" {
+		awsCfg.Credentials = aws.NewCredentialsCache(stscreds.NewAssumeRoleProvider(
+			sts.NewFromConfig(awsCfg), cfg.RoleARN, func(o *stscreds.AssumeRoleOptions) {
+				if cfg.ExternalID != "" {
+					o.ExternalID = aws.String(cfg.ExternalID)
+				}
+			}))
+	}
 	client := sqs.NewFromConfig(awsCfg, func(o *sqs.Options) {
 		if cfg.EndpointURL != "" {
 			o.BaseEndpoint = aws.String(cfg.EndpointURL)
@@ -73,15 +83,12 @@ func NewSQS(ctx context.Context, cfg Config) (*AWSSQSBackend, error) {
 	}, nil
 }
 
-func (b *AWSSQSBackend) Send(ctx context.Context, message map[string]any, delay time.Duration) (string, error) {
-	body, err := json.Marshal(message)
-	if err != nil {
-		return "", fmt.Errorf("%w: %w", core.ErrMessageSend, err)
-	}
+func (b *AWSSQSBackend) Send(ctx context.Context, body []byte, attributes map[string]string, delay time.Duration) (string, error) {
 	resp, err := b.client.SendMessage(ctx, &sqs.SendMessageInput{
-		QueueUrl:     aws.String(b.queueURL),
-		MessageBody:  aws.String(string(body)),
-		DelaySeconds: int32(delay / time.Second),
+		QueueUrl:          aws.String(b.queueURL),
+		MessageBody:       aws.String(string(body)),
+		DelaySeconds:      int32(delay / time.Second),
+		MessageAttributes: sqsAttrs(attributes),
 	})
 	if err != nil {
 		return "", b.mapErr(err)
@@ -89,16 +96,13 @@ func (b *AWSSQSBackend) Send(ctx context.Context, message map[string]any, delay 
 	return aws.ToString(resp.MessageId), nil
 }
 
-func (b *AWSSQSBackend) SendBatch(ctx context.Context, messages []map[string]any) ([]string, error) {
+func (b *AWSSQSBackend) SendBatch(ctx context.Context, messages []OutgoingMessage) ([]string, error) {
 	entries := make([]types.SendMessageBatchRequestEntry, 0, len(messages))
 	for i, msg := range messages {
-		body, err := json.Marshal(msg)
-		if err != nil {
-			return nil, fmt.Errorf("%w: %w", core.ErrMessageSend, err)
-		}
 		entries = append(entries, types.SendMessageBatchRequestEntry{
-			Id:          aws.String(strconv.Itoa(i)),
-			MessageBody: aws.String(string(body)),
+			Id:                aws.String(strconv.Itoa(i)),
+			MessageBody:       aws.String(string(msg.Body)),
+			MessageAttributes: sqsAttrs(msg.Attributes),
 		})
 	}
 	resp, err := b.client.SendMessageBatch(ctx, &sqs.SendMessageBatchInput{
@@ -128,6 +132,7 @@ func (b *AWSSQSBackend) Receive(ctx context.Context, maxMessages int, waitTime t
 		MaxNumberOfMessages:         int32(min(maxMessages, 10)),
 		WaitTimeSeconds:             int32(waitTime / time.Second),
 		MessageSystemAttributeNames: []types.MessageSystemAttributeName{"All"},
+		MessageAttributeNames:       []string{"All"},
 	})
 	if err != nil {
 		return nil, b.mapErr(err)
@@ -138,22 +143,39 @@ func (b *AWSSQSBackend) Receive(ctx context.Context, maxMessages int, waitTime t
 	for _, m := range resp.Messages {
 		rawBody := aws.ToString(m.Body)
 		b.pending[aws.ToString(m.ReceiptHandle)] = rawBody
-		var body map[string]any
-		if err := json.Unmarshal([]byte(rawBody), &body); err != nil {
-			return nil, fmt.Errorf("%w: decoding message body: %w", core.ErrMessaging, err)
-		}
-		attrs := make(map[string]string, len(m.Attributes))
+		// User attributes (MessageAttributes) take priority; system attributes
+		// (SentTimestamp, etc.) are merged underneath.
+		attrs := make(map[string]string, len(m.Attributes)+len(m.MessageAttributes))
 		for k, v := range m.Attributes {
 			attrs[k] = v
 		}
+		for k, v := range m.MessageAttributes {
+			attrs[k] = aws.ToString(v.StringValue)
+		}
 		messages = append(messages, Message{
 			ID:            aws.ToString(m.MessageId),
-			Body:          body,
+			Body:          []byte(rawBody),
 			ReceiptHandle: aws.ToString(m.ReceiptHandle),
 			Attributes:    attrs,
 		})
 	}
 	return messages, nil
+}
+
+// sqsAttrs converts a string attribute map into SQS MessageAttributeValues
+// (all String type). Returns nil for an empty map so SDK validation is skipped.
+func sqsAttrs(attributes map[string]string) map[string]types.MessageAttributeValue {
+	if len(attributes) == 0 {
+		return nil
+	}
+	out := make(map[string]types.MessageAttributeValue, len(attributes))
+	for k, v := range attributes {
+		out[k] = types.MessageAttributeValue{
+			DataType:    aws.String("String"),
+			StringValue: aws.String(v),
+		}
+	}
+	return out
 }
 
 func (b *AWSSQSBackend) Delete(ctx context.Context, receiptHandle string) error {

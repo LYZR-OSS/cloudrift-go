@@ -10,6 +10,7 @@ import (
 	"context"
 	"crypto/rand"
 	"encoding/hex"
+	"encoding/json"
 	"fmt"
 	"time"
 
@@ -19,20 +20,43 @@ import (
 // Message is a received queue message.
 type Message struct {
 	ID string
-	// Body is the JSON-decoded message payload.
-	Body map[string]any
+	// Body is the raw message payload bytes (binary-safe). Use Message.JSON()
+	// to decode a JSON object body.
+	Body []byte
 	// ReceiptHandle acknowledges the message via Delete or DeadLetter.
 	ReceiptHandle string
-	Attributes    map[string]string
+	// Attributes are the message's user attributes — SQS MessageAttributes /
+	// Azure Service Bus ApplicationProperties — stringified.
+	Attributes map[string]string
 }
 
-// Backend is the provider-neutral queue interface.
+// JSON decodes the message body as a JSON object. Convenience for the common
+// case where the body is JSON (e.g. produced via SendJSON).
+func (m Message) JSON() (map[string]any, error) {
+	var out map[string]any
+	if err := json.Unmarshal(m.Body, &out); err != nil {
+		return nil, fmt.Errorf("%w: decoding message body: %w", core.ErrMessaging, err)
+	}
+	return out, nil
+}
+
+// OutgoingMessage is one message for SendBatch: raw body bytes plus optional
+// user attributes.
+type OutgoingMessage struct {
+	Body       []byte
+	Attributes map[string]string
+}
+
+// Backend is the provider-neutral queue interface. Bodies are raw bytes
+// (binary-safe) so any payload — JSON, OTLP protobuf, base64 — round-trips
+// unchanged. Use SendJSON / Message.JSON for the JSON-object convenience path.
 type Backend interface {
-	// Send sends a message (JSON-encoded). delay postpones visibility.
-	// Returns the message ID.
-	Send(ctx context.Context, message map[string]any, delay time.Duration) (string, error)
+	// Send sends a raw message body with optional user attributes (SQS
+	// MessageAttributes / Service Bus ApplicationProperties). delay postpones
+	// visibility. Returns the message ID.
+	Send(ctx context.Context, body []byte, attributes map[string]string, delay time.Duration) (string, error)
 	// SendBatch sends multiple messages. Returns their message IDs.
-	SendBatch(ctx context.Context, messages []map[string]any) ([]string, error)
+	SendBatch(ctx context.Context, messages []OutgoingMessage) ([]string, error)
 	// Receive fetches up to maxMessages, long-polling up to waitTime.
 	Receive(ctx context.Context, maxMessages int, waitTime time.Duration) ([]Message, error)
 	// Delete acknowledges a message by its receipt handle.
@@ -66,6 +90,11 @@ type Config struct {
 	AWSSessionToken    string
 	ProfileName        string
 	EndpointURL        string // custom endpoint (LocalStack, ...)
+	// RoleARN, when set, is assumed via STS on top of the base credentials
+	// (static keys / profile / default chain). ExternalID is passed in the
+	// AssumeRole call when set. Enables cross-account SQS access.
+	RoleARN    string
+	ExternalID string
 	// DLQURL is the dead-letter queue URL for SQS DeadLetter emulation. If
 	// empty it is resolved lazily from the source queue's RedrivePolicy.
 	DLQURL string
@@ -98,6 +127,16 @@ func New(ctx context.Context, provider string, cfg Config) (Backend, error) {
 	}
 	return nil, fmt.Errorf("%w: unknown messaging provider %q (choose 'sqs' or 'azure_bus')",
 		core.ErrMessaging, provider)
+}
+
+// SendJSON is a thin convenience over Send for the common case of a JSON-object
+// payload: it marshals message and sends it with the given attributes/delay.
+func SendJSON(ctx context.Context, b Backend, message map[string]any, attributes map[string]string, delay time.Duration) (string, error) {
+	body, err := json.Marshal(message)
+	if err != nil {
+		return "", fmt.Errorf("%w: %w", core.ErrMessageSend, err)
+	}
+	return b.Send(ctx, body, attributes, delay)
 }
 
 // newID returns a random RFC 4122 v4 UUID string (used where the provider SDK

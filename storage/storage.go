@@ -68,6 +68,10 @@ type Config struct {
 	AWSSessionToken    string
 	ProfileName        string
 	EndpointURL        string // custom endpoint (LocalStack, MinIO, ...)
+	// RoleARN, when set, is assumed via STS on top of the base credentials.
+	// ExternalID is passed in the AssumeRole call when set. Cross-account S3.
+	RoleARN    string
+	ExternalID string
 
 	// Azure Blob.
 	Container        string

@@ -1,8 +1,10 @@
 // Package secrets provides a provider-neutral interface over cloud secret
-// stores: AWS Secrets Manager and Azure Key Vault.
+// stores (AWS Secrets Manager, Azure Key Vault) plus non-cloud backends for
+// local development, self-hosted deployments, CI, and tests: environment
+// variables, a JSON file, or an in-memory mapping.
 //
-// Construct a backend once at service startup via New (or
-// NewAWSSecretsManager / NewAzureKeyVault) and reuse it.
+// Construct a backend once at service startup via New (or one of the concrete
+// constructors) and reuse it.
 package secrets
 
 import (
@@ -47,12 +49,19 @@ type Config struct {
 	TenantID     string
 	ClientID     string // service principal app ID, or user-assigned MI client ID
 	ClientSecret string
+
+	// Local (env / file / memory).
+	Prefix   string            // env: namespace prefix, secret "db" → env "{Prefix}db"
+	FilePath string            // file: path to the JSON {name: value} store
+	Mapping  map[string]string // memory/local: initial in-memory secrets
 }
 
 // New instantiates a secret management backend.
 //
-// provider is "aws_secrets_manager" or "azure_keyvault". The auth method is
-// inferred from which credential fields are set, exactly as in the Python
+// provider is "aws_secrets_manager", "azure_keyvault", or a non-cloud source —
+// "env" (environment variables), "file" (a JSON file), or "memory"/"local"
+// (in-memory mapping, mainly dev/tests). For the cloud providers the auth method
+// is inferred from which credential fields are set, exactly as in the Python
 // library:
 //
 //	New(ctx, "aws_secrets_manager", Config{Region: "us-east-1"})  // IAM role / env
@@ -60,13 +69,22 @@ type Config struct {
 //	New(ctx, "azure_keyvault", Config{VaultURL: "https://myvault.vault.azure.net"})
 //	New(ctx, "azure_keyvault", Config{VaultURL: "...", TenantID: "...",
 //	    ClientID: "...", ClientSecret: "..."})
+//	New(ctx, "env", Config{Prefix: "SECRET_"})            // read SECRET_<name> env vars
+//	New(ctx, "file", Config{FilePath: "/run/secrets.json"}) // JSON {name: value}
+//	New(ctx, "memory", Config{Mapping: map[string]string{"db": "..."}}) // in-memory
 func New(ctx context.Context, provider string, cfg Config) (Backend, error) {
 	switch provider {
 	case "aws_secrets_manager":
 		return NewAWSSecretsManager(ctx, cfg)
 	case "azure_keyvault":
 		return NewAzureKeyVault(cfg)
+	case "env":
+		return NewEnvSecrets(cfg.Prefix), nil
+	case "file":
+		return NewFileSecrets(cfg.FilePath), nil
+	case "memory", "local":
+		return NewMappingSecrets(cfg.Mapping), nil
 	}
-	return nil, fmt.Errorf("%w: unknown secrets provider %q (choose 'aws_secrets_manager' or 'azure_keyvault')",
+	return nil, fmt.Errorf("%w: unknown secrets provider %q (choose 'aws_secrets_manager', 'azure_keyvault', 'env', 'file', or 'memory')",
 		core.ErrSecret, provider)
 }
