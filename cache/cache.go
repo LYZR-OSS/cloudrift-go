@@ -119,6 +119,15 @@ type Backend interface {
 	// (MULTI/EXEC) in a single round trip.
 	Pipeline(ctx context.Context, fn func(Pipeliner)) error
 
+	// Eval runs a Lua script atomically on the server and returns its raw
+	// result (the value the script returns, or nil if it returns nothing).
+	// keys are the KEYS[] the script reads/writes; args become ARGV[]. This is
+	// the one primitive that expresses race-free check-then-act logic (rate
+	// limiters, quota counters, slot reservation) that the individual commands
+	// above cannot. All cache providers are Redis-protocol, so it is supported
+	// on each.
+	Eval(ctx context.Context, script string, keys []string, args ...any) (any, error)
+
 	// Ping reports whether the cache server is reachable.
 	Ping(ctx context.Context) (bool, error)
 	// Flush removes all keys from the current database. Use with caution.
