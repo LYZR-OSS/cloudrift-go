@@ -435,3 +435,39 @@ func TestNewStandaloneFromCredentialsAgainstMiniredis(t *testing.T) {
 		t.Fatalf("Ping = %v, err = %v", ok, err)
 	}
 }
+
+// ---------------------------------------------------------------------------
+// eval (Lua scripting)
+// ---------------------------------------------------------------------------
+
+func TestEval(t *testing.T) {
+	c, _ := newTestBackend(t)
+	ctx := context.Background()
+
+	// Atomic increment-with-cap: the check-then-act pattern the individual
+	// commands cannot do race-free. Returns {allowed(1/0), count}. Calling it
+	// repeatedly also exercises the script-SHA cache (EVALSHA reuse).
+	const capScript = `
+local cur = redis.call('INCR', KEYS[1])
+if cur > tonumber(ARGV[1]) then
+  redis.call('DECR', KEYS[1])
+  return {0, cur - 1}
+end
+return {1, cur}`
+
+	// Cap of 2: first two allowed, third denied without consuming quota.
+	want := []struct{ allowed, count int64 }{{1, 1}, {1, 2}, {0, 2}}
+	for i, w := range want {
+		res, err := c.Eval(ctx, capScript, []string{"slots"}, 2)
+		if err != nil {
+			t.Fatalf("call %d: %v", i, err)
+		}
+		vals, ok := res.([]interface{})
+		if !ok || len(vals) != 2 {
+			t.Fatalf("call %d: got %#v, want 2-element slice", i, res)
+		}
+		if vals[0].(int64) != w.allowed || vals[1].(int64) != w.count {
+			t.Fatalf("call %d: got {%v,%v}, want {%d,%d}", i, vals[0], vals[1], w.allowed, w.count)
+		}
+	}
+}

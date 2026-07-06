@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"sync"
 	"time"
 
 	"github.com/redis/go-redis/v9"
@@ -20,6 +21,9 @@ import (
 // Backend interface — never reimplemented per provider.
 type redisOps struct {
 	client *redis.Client
+	// scripts caches compiled Lua scripts (src -> *redis.Script) so Eval can
+	// use EVALSHA on the hot path instead of resending the source each call.
+	scripts sync.Map
 }
 
 func wrapCache(err error) error {
@@ -203,6 +207,25 @@ func (b *redisOps) Pipeline(ctx context.Context, fn func(Pipeliner)) error {
 		return nil
 	})
 	return wrapCache(err)
+}
+
+func (b *redisOps) Eval(ctx context.Context, script string, keys []string, args ...any) (any, error) {
+	res, err := b.scriptFor(script).Run(ctx, b.client, keys, args...).Result()
+	if errors.Is(err, redis.Nil) {
+		return nil, nil
+	}
+	return res, wrapCache(err)
+}
+
+// scriptFor returns a cached *redis.Script for src, compiling it on first use.
+// A *redis.Script memoizes its own SHA, so Run issues EVALSHA and only falls
+// back to EVAL when the server has not yet seen the script.
+func (b *redisOps) scriptFor(src string) *redis.Script {
+	if s, ok := b.scripts.Load(src); ok {
+		return s.(*redis.Script)
+	}
+	s, _ := b.scripts.LoadOrStore(src, redis.NewScript(src))
+	return s.(*redis.Script)
 }
 
 func (b *redisOps) Ping(ctx context.Context) (bool, error) {
