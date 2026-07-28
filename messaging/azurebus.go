@@ -314,7 +314,13 @@ func (b *AzureServiceBusBackend) HealthCheck(ctx context.Context) bool {
 	if err != nil {
 		return false
 	}
-	return sender.Close(ctx) == nil
+	defer sender.Close(ctx) //nolint:errcheck // best-effort close of a probe sender
+	// Senders are lazy: NewSender and Close alone never touch the network, so
+	// they can't detect a bad namespace, missing queue, or denied Send claim.
+	// NewMessageBatch forces the AMQP link open (connection + CBS auth +
+	// entity check) without sending anything.
+	_, err = sender.NewMessageBatch(ctx, nil)
+	return err == nil
 }
 
 func (b *AzureServiceBusBackend) Close(ctx context.Context) error {
