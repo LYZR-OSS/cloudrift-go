@@ -1,7 +1,12 @@
 package core
 
 import (
+	"context"
+	"errors"
+	"time"
+
 	"github.com/Azure/azure-sdk-for-go/sdk/azcore"
+	"github.com/Azure/azure-sdk-for-go/sdk/azcore/policy"
 	"github.com/Azure/azure-sdk-for-go/sdk/azidentity"
 )
 
@@ -38,7 +43,7 @@ func NewAzureCredential(clientID string) (azcore.TokenCredential, error) {
 		miOpts = &azidentity.ManagedIdentityCredentialOptions{ID: azidentity.ClientID(clientID)}
 	}
 	if mi, err := azidentity.NewManagedIdentityCredential(miOpts); err == nil {
-		sources = append(sources, mi)
+		sources = append(sources, &imdsTimeoutWrapper{cred: mi, timeout: imdsProbeTimeout})
 	}
 
 	if cli, err := azidentity.NewAzureCLICredential(nil); err == nil {
@@ -46,4 +51,36 @@ func NewAzureCredential(clientID string) (azcore.TokenCredential, error) {
 	}
 
 	return azidentity.NewChainedTokenCredential(sources, nil)
+}
+
+// imdsProbeTimeout bounds the first managed-identity token attempt. Outside
+// Azure the IMDS endpoint (169.254.169.254) blackholes packets, so an unbounded
+// attempt hangs instead of falling through to the Azure CLI — Python's
+// DefaultAzureCredential probes IMDS with the same short timeout for the same
+// reason.
+const imdsProbeTimeout = 2 * time.Second
+
+// imdsTimeoutWrapper is the official azidentity pattern for chaining a
+// ManagedIdentityCredential: apply a probe timeout to the first GetToken and
+// convert a deadline hit into a credential-unavailable error so the chain
+// advances. Once any attempt gets a response from IMDS, the timeout is
+// dropped — the endpoint exists, so later slowness is real latency, not
+// absence.
+type imdsTimeoutWrapper struct {
+	cred    azcore.TokenCredential
+	timeout time.Duration
+}
+
+func (w *imdsTimeoutWrapper) GetToken(ctx context.Context, opts policy.TokenRequestOptions) (azcore.AccessToken, error) {
+	if w.timeout <= 0 {
+		return w.cred.GetToken(ctx, opts)
+	}
+	c, cancel := context.WithTimeout(ctx, w.timeout)
+	defer cancel()
+	tk, err := w.cred.GetToken(c, opts)
+	if errors.Is(c.Err(), context.DeadlineExceeded) {
+		return tk, azidentity.NewCredentialUnavailableError("managed identity timed out; IMDS unreachable")
+	}
+	w.timeout = 0 // IMDS responded — never time out real token refreshes
+	return tk, err
 }
