@@ -52,15 +52,12 @@ func NewAzureRedisFromAccessKey(cfg Config) (*AzureRedisCacheBackend, error) {
 // (Entra ID token auth). Requires the cache to have Microsoft Entra
 // Authentication enabled and the identity to hold a Redis data-access role.
 //
-// cfg.Username is the object ID (or configured Redis username) of the managed
-// identity. Set cfg.ClientID for a user-assigned identity; omit for the
-// system-assigned identity.
+// The identity resolves through workload identity → managed identity →
+// az CLI (see core.NewAzureCredential). cfg.Username is the object ID (or
+// configured Redis username) of the identity. Set cfg.ClientID for a
+// user-assigned identity; omit for the system-assigned identity.
 func NewAzureRedisFromManagedIdentity(cfg Config) (*AzureRedisCacheBackend, error) {
-	var miOpts *azidentity.ManagedIdentityCredentialOptions
-	if cfg.ClientID != "" {
-		miOpts = &azidentity.ManagedIdentityCredentialOptions{ID: azidentity.ClientID(cfg.ClientID)}
-	}
-	cred, err := azidentity.NewManagedIdentityCredential(miOpts)
+	cred, err := core.NewAzureCredential(cfg.ClientID)
 	if err != nil {
 		return nil, fmt.Errorf("%w: failed to connect to Azure Cache for Redis (Managed Identity): %w",
 			core.ErrCacheConnection, err)

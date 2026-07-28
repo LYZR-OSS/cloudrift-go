@@ -79,12 +79,8 @@ func NewAzureServiceBus(cfg Config) (*AzureServiceBusBackend, error) {
 		}
 		b.client, b.namespace, b.cred = client, cfg.FullyQualifiedNamespace, cred
 
-	default: // managed identity (system or user-assigned via ClientID)
-		var miOpts *azidentity.ManagedIdentityCredentialOptions
-		if cfg.ClientID != "" {
-			miOpts = &azidentity.ManagedIdentityCredentialOptions{ID: azidentity.ClientID(cfg.ClientID)}
-		}
-		cred, err := azidentity.NewManagedIdentityCredential(miOpts)
+	default: // workload identity → managed identity → az CLI (user-assigned via ClientID)
+		cred, err := core.NewAzureCredential(cfg.ClientID)
 		if err != nil {
 			return nil, fmt.Errorf("%w: %w", core.ErrMessaging, err)
 		}

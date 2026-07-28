@@ -83,12 +83,8 @@ func NewAzureBlob(cfg Config) (*AzureBlobBackend, error) {
 		}
 		return &AzureBlobBackend{container: cfg.Container, client: client}, nil
 
-	default: // managed identity (system or user-assigned via ClientID)
-		var miOpts *azidentity.ManagedIdentityCredentialOptions
-		if cfg.ClientID != "" {
-			miOpts = &azidentity.ManagedIdentityCredentialOptions{ID: azidentity.ClientID(cfg.ClientID)}
-		}
-		cred, err := azidentity.NewManagedIdentityCredential(miOpts)
+	default: // workload identity → managed identity → az CLI (user-assigned via ClientID)
+		cred, err := core.NewAzureCredential(cfg.ClientID)
 		if err != nil {
 			return nil, fmt.Errorf("%w: %w", core.ErrStorage, err)
 		}

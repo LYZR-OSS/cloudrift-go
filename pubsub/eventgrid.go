@@ -40,13 +40,9 @@ func NewAzureEventGrid(cfg Config) (*AzureEventGridBackend, error) {
 			client, err = publisher.NewClient(cfg.Endpoint, cred, nil)
 		}
 
-	default: // managed identity (system or user-assigned via ClientID)
-		var miOpts *azidentity.ManagedIdentityCredentialOptions
-		if cfg.ClientID != "" {
-			miOpts = &azidentity.ManagedIdentityCredentialOptions{ID: azidentity.ClientID(cfg.ClientID)}
-		}
-		var cred *azidentity.ManagedIdentityCredential
-		cred, err = azidentity.NewManagedIdentityCredential(miOpts)
+	default: // workload identity → managed identity → az CLI (user-assigned via ClientID)
+		var cred azcore.TokenCredential
+		cred, err = core.NewAzureCredential(cfg.ClientID)
 		if err == nil {
 			client, err = publisher.NewClient(cfg.Endpoint, cred, nil)
 		}

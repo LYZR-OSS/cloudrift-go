@@ -31,11 +31,8 @@ func NewAzureKeyVault(cfg Config) (*AzureKeyVaultBackend, error) {
 	if cfg.ClientSecret != "" {
 		cred, err = azidentity.NewClientSecretCredential(cfg.TenantID, cfg.ClientID, cfg.ClientSecret, nil)
 	} else {
-		var miOpts *azidentity.ManagedIdentityCredentialOptions
-		if cfg.ClientID != "" {
-			miOpts = &azidentity.ManagedIdentityCredentialOptions{ID: azidentity.ClientID(cfg.ClientID)}
-		}
-		cred, err = azidentity.NewManagedIdentityCredential(miOpts)
+		// workload identity → managed identity → az CLI
+		cred, err = core.NewAzureCredential(cfg.ClientID)
 	}
 	if err != nil {
 		return nil, fmt.Errorf("%w: %w", core.ErrSecret, err)
