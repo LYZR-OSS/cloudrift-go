@@ -78,12 +78,19 @@ func NewAzureServiceBus(cfg Config) (*AzureServiceBusBackend, error) {
 		}
 		b.client, b.namespace, b.cred = client, cfg.FullyQualifiedNamespace, cred
 
-	default: // managed identity (system or user-assigned via ClientID)
-		var miOpts *azidentity.ManagedIdentityCredentialOptions
+	default: // workload identity / managed identity via DefaultAzureCredential
+		// DefaultAzureCredential tries, in order: EnvironmentCredential,
+		// WorkloadIdentityCredential (AZURE_FEDERATED_TOKEN_FILE), then
+		// ManagedIdentityCredential (IMDS). This is essential on AKS
+		// clusters using workload identity federation where the MI is NOT
+		// attached to the VMSS — plain ManagedIdentityCredential can't do
+		// the federated-token exchange and fails against namespaces that
+		// have SAS/local-auth disabled.
+		var dacOpts *azidentity.DefaultAzureCredentialOptions
 		if cfg.ClientID != "" {
-			miOpts = &azidentity.ManagedIdentityCredentialOptions{ID: azidentity.ClientID(cfg.ClientID)}
+			dacOpts = &azidentity.DefaultAzureCredentialOptions{ManagedIdentityClientID: cfg.ClientID}
 		}
-		cred, err := azidentity.NewManagedIdentityCredential(miOpts)
+		cred, err := azidentity.NewDefaultAzureCredential(dacOpts)
 		if err != nil {
 			return nil, fmt.Errorf("%w: %w", core.ErrMessaging, err)
 		}
