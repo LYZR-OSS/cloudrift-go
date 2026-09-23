@@ -2,19 +2,21 @@
 
 Cloud-agnostic abstraction for **storage**, **messaging**, **document databases**, **cache**, **secrets**, **pub/sub**, and **email** — built for Lyzr microservices. The Go port of [cloudrift](../README.md) (Python).
 
-- **Context-first.** Every operation takes a `context.Context` and is backed by native Go cloud SDKs (`aws-sdk-go-v2`, `azure-sdk-for-go`, `mongo-driver/v2`, `go-redis/v9`) — connection-pooled, no wrappers.
-- **Drop-in providers.** Same interface across AWS, Azure, and self-hosted backends. Swap `s3` ↔ `azure_blob` (or `sqs` ↔ `azure_bus`, `documentdb` ↔ `cosmos`, `redis` ↔ `elasticache` ↔ `azure_redis`, `ses` ↔ `azure_acs` ↔ `smtp`) by changing one string.
-- **Multiple auth methods per provider.** Static keys, IAM roles, profiles, managed identity, service principals, SAS tokens, mTLS, IAM auth — pick what your microservice already has.
+- **Context-first.** Every operation takes a `context.Context` and is backed by native Go cloud SDKs (`aws-sdk-go-v2`, `azure-sdk-for-go`, `cloud.google.com/go/pubsub/v2`, `mongo-driver/v2`, `go-redis/v9`) — connection-pooled, no wrappers.
+- **Drop-in providers.** Same interface across AWS, Azure, GCP, and self-hosted backends. Swap `s3` ↔ `azure_blob` (or `sqs` ↔ `azure_bus` ↔ `gcp_pubsub`, `documentdb` ↔ `cosmos` ↔ `firestore`, `redis` ↔ `elasticache` ↔ `azure_redis` ↔ `memorystore`, `ses` ↔ `azure_acs` ↔ `smtp`) by changing one string.
+- **Multiple auth methods per provider.** Static keys, IAM roles, profiles, managed identity, service principals, SAS tokens, mTLS, IAM auth, Workload Identity / ADC — pick what your microservice already has.
 
-| Category | Factory | AWS | Azure | Self-hosted |
-|---|---|---|---|---|
-| Storage | `storage.New` | `s3` | `azure_blob` | — |
-| Messaging | `messaging.New` | `sqs` | `azure_bus` | — |
-| Document DB | `document.New` | `documentdb` | `cosmos` | — |
-| Cache | `cache.New` | `elasticache` | `azure_redis` | `redis` |
-| Secrets | `secrets.New` | `aws_secrets_manager` | `azure_keyvault` | `env` / `file` / `memory` |
-| Pub/Sub | `pubsub.New` | `sns` | `azure_eventgrid` | — |
-| Email | `email.New` | `ses` | `azure_acs` | `smtp` |
+| Category | Factory | AWS | Azure | GCP | Self-hosted |
+|---|---|---|---|---|---|
+| Storage | `storage.New` | `s3` | `azure_blob` | — | — |
+| Messaging | `messaging.New` | `sqs` | `azure_bus` | `gcp_pubsub` | — |
+| Document DB | `document.New` | `documentdb` | `cosmos` | `firestore` | — |
+| Cache | `cache.New` | `elasticache` | `azure_redis` | `memorystore` | `redis` |
+| Secrets | `secrets.New` | `aws_secrets_manager` | `azure_keyvault` | — | `env` / `file` / `memory` |
+| Pub/Sub | `pubsub.New` | `sns` | `azure_eventgrid` | — | — |
+| Email | `email.New` | `ses` | `azure_acs` | — | `smtp` |
+
+> **GCP coverage.** The GCP backends cover the categories the Go services use: messaging, document, and cache. GCS, Secret Manager, and fan-out Pub/Sub exist in the Python library but are not ported yet. GCP has no transactional email service — use `smtp`.
 
 ---
 
@@ -123,6 +125,12 @@ q, err := messaging.New(ctx, "azure_bus", messaging.Config{
     ConnectionString: "...", QueueName: "my-queue"})
 q, err := messaging.New(ctx, "azure_bus", messaging.Config{
     FullyQualifiedNamespace: "ns.servicebus.windows.net", QueueName: "my-queue"}) // managed identity
+
+// GCP Pub/Sub — a topic to send, a pull subscription to receive
+q, err := messaging.New(ctx, "gcp_pubsub", messaging.Config{
+    Project: "my-project", Topic: "jobs", Subscription: "jobs-sub"}) // ADC / Workload Identity
+q, err := messaging.New(ctx, "gcp_pubsub", messaging.Config{
+    Project: "my-project", Topic: "jobs"})                           // send only
 ```
 
 **Operations**:
@@ -157,11 +165,24 @@ For cross-account access, set `Config.RoleARN` (+ optional `ExternalID`) on `mes
 
 > **Dead-lettering:** Azure Service Bus dead-letters natively. SQS has no per-message dead-letter API, so the backend emulates it: it re-sends the message body to the DLQ (from `Config.DLQURL` or the queue's RedrivePolicy) and deletes the original.
 
+**Pub/Sub differences.** Pub/Sub splits a queue into a topic (send) and a pull subscription (receive), so set whichever halves the service uses — calling the other direction returns `core.ErrMessaging`, and a send-only backend never opens a subscriber connection. `Topic`, `Subscription`, and `DeadLetterTopic` take a bare ID or a full `projects/…` name. Where the interface does not map, it says so rather than differing silently:
+
+| Operation | On Pub/Sub |
+|---|---|
+| `Send` with a delay | `core.ErrNotImplemented` — Pub/Sub has no delayed delivery (use Cloud Tasks) |
+| `GetQueueDepth` | `core.ErrNotImplemented` — backlog is the Cloud Monitoring metric `subscription/num_undelivered_messages` |
+| `Receive` `waitTime` | Bounds the Pull RPC (3s when 0); an idle pull returns an empty slice, like an SQS long poll |
+| `DeadLetter` | Emulated like SQS — publish to `Config.DeadLetterTopic`, then ack; requires `DeadLetterTopic` |
+| `Purge` | Seeks the subscription to now |
+| `HealthCheck` | `TestIamPermissions` for `pubsub.topics.publish` / `pubsub.subscriptions.consume`, which needs no extra role — an identity with only `roles/pubsub.publisher` / `roles/pubsub.subscriber` reports healthy |
+
+**GCP identity.** Application Default Credentials by default (`GOOGLE_APPLICATION_CREDENTIALS` → gcloud ADC file → metadata server), so the same code runs under GKE Workload Identity, on Cloud Run, and on a laptop after `gcloud auth application-default login`. Pin an identity with `ServiceAccountFile` or `ServiceAccountJSON` (a key held in memory), or set `PreferMetadata: true` to skip ADC so a stray `GOOGLE_APPLICATION_CREDENTIALS` cannot shadow the workload identity. The clients honor `PUBSUB_EMULATOR_HOST`.
+
 ---
 
 ## Document Database
 
-`document.New` is a connection factory: it returns a configured `*mongo.Client` from the official [MongoDB Go driver](https://pkg.go.dev/go.mongodb.org/mongo-driver/v2/mongo) regardless of provider — both AWS DocumentDB and Azure Cosmos DB (MongoDB API) speak the MongoDB wire protocol. You get the driver's full native API: typed decoding, transactions, bulk writes, change streams, aggregation.
+`document.New` is a connection factory: it returns a configured `*mongo.Client` from the official [MongoDB Go driver](https://pkg.go.dev/go.mongodb.org/mongo-driver/v2/mongo) regardless of provider — AWS DocumentDB, Azure Cosmos DB (MongoDB API), and Firestore with MongoDB compatibility all speak the MongoDB wire protocol. You get the driver's full native API: typed decoding, transactions, bulk writes, change streams, aggregation.
 
 ```go
 import "github.com/LYZR-OSS/cloudrift-go/document"
@@ -181,9 +202,17 @@ client, err := document.New("documentdb", document.Config{ // or mTLS
 // Azure Cosmos DB (MongoDB API)
 client, err := document.New("cosmos", document.Config{ConnectionString: "mongodb://..."})
 client, err := document.New("cosmos", document.Config{Account: "myacct", AccountKey: "..."})
+
+// Firestore with MongoDB compatibility
+client, err := document.New("firestore", document.Config{ // OIDC as the workload identity — no secret
+    UID: "f116f93a-519c-...", Location: "nam5", Database: "mydb"})
+client, err := document.New("firestore", document.Config{ // SCRAM-SHA-256
+    UID: "...", Location: "nam5", Database: "mydb", Username: "u", Password: "p"})
+client, err := document.New("firestore", document.Config{ // gcloud firestore databases connection-string
+    ConnectionString: "mongodb://...firestore.goog:443/mydb?..."})
 ```
 
-**Operations** — the native driver API, identical on both providers:
+**Operations** — the native driver API, identical on every provider:
 
 ```go
 import "go.mongodb.org/mongo-driver/v2/bson"
@@ -200,6 +229,8 @@ err = client.Disconnect(ctx) // lifecycle is caller-managed; call at shutdown
 ```
 
 > **Cosmos note:** key-based auth only (connection string or account + key) — Cosmos for MongoDB (RU) does not accept Azure AD tokens at the wire-protocol layer. `Account` + `AccountKey` builds the URI with the Cosmos-required parameters (`ssl`, `replicaSet=globaldb`, `retryWrites=false`).
+
+> **Firestore note:** this is a database in **MongoDB compatibility mode** (Enterprise edition), not classic Firestore. `UID` is the UUID in the endpoint host, not the database ID. Firestore's mandatory `loadBalanced=true`, `tls=true`, `retryWrites=false` are applied on every path, including your own URI, and a URI carrying no credentials — such as gcloud's default `connection-string` output — gets OIDC, since Firestore rejects every unauthenticated operation (on first use, not at startup). One endpoint serves exactly one database: select `client.Database(cfg.Database)` — any other name fails, lazily, on first use. Grant `roles/datastore.user`.
 
 ---
 
@@ -225,7 +256,15 @@ c, err := cache.New(ctx, "azure_redis", "from_access_key", cache.Config{
     Host: "my-cache.redis.cache.windows.net", AccessKey: "..."})
 c, err := cache.New(ctx, "azure_redis", "from_managed_identity", cache.Config{
     Host: "my-cache.redis.cache.windows.net", Username: "lyzr-app"})
+
+// GCP Memorystore for Redis
+c, err := cache.New(ctx, "memorystore", "from_server_ca_cert", cache.Config{ // in-transit encryption, port 6378
+    Host: "10.0.0.3", AuthString: "...", CACerts: "/mnt/memorystore/ca.pem"})
+c, err := cache.New(ctx, "memorystore", "from_auth_string", cache.Config{    // plaintext instance, port 6379
+    Host: "10.0.0.3", AuthString: "..."})
 ```
+
+> **Memorystore note:** AUTH and in-transit encryption are both opt-in on Memorystore (unlike ElastiCache and Azure), so `from_auth_string` defaults to plaintext. With encryption on, the instance listens on **6378** and presents a certificate from a per-instance CA that is not in the system trust store, so `from_server_ca_cert` requires `CACerts` — include every CA from `gcloud redis instances describe` (an instance carries two during a rotation). The Python library's `from_iam_auth` (Redis Cluster / Valkey only) is not ported.
 
 **Operations** — KV, hash, set, list, counters:
 
@@ -384,7 +423,7 @@ Every backend holds **one long-lived client** reused across all operations:
 
 - **Don't** call `storage.New(...)` inside a request handler.
 - **Do** construct it once at startup and share it (struct field, DI container, or package-level singleton).
-- Release sockets at shutdown with `backend.Close(ctx)`. (AWS/Azure HTTP-based backends are no-op closes; Redis, Mongo, and Service Bus actually tear down connections.)
+- Release sockets at shutdown with `backend.Close(ctx)`. (AWS/Azure HTTP-based backends are no-op closes; Redis, Mongo, Service Bus, and Pub/Sub actually tear down connections.)
 
 ---
 
@@ -394,4 +433,4 @@ Every backend holds **one long-lived client** reused across all operations:
 go test ./...
 ```
 
-The cache suite runs against an in-process [miniredis](https://github.com/alicebob/miniredis) (the Go analogue of the Python suite's fakeredis), so no real cloud credentials are needed. AWS backends accept `Config.EndpointURL` for LocalStack/MinIO-style integration testing.
+The cache suite runs against an in-process [miniredis](https://github.com/alicebob/miniredis) (the Go analogue of the Python suite's fakeredis), so no real cloud credentials are needed. AWS backends accept `Config.EndpointURL` for LocalStack/MinIO-style integration testing. Pub/Sub runs against the client library's in-process fake (`pstest`) through `PUBSUB_EMULATOR_HOST`, and every Firestore URI is parsed with the MongoDB driver's own connection-string parser, so a malformed URI fails in tests rather than at connect time.
