@@ -178,7 +178,7 @@ func TestNewGCPPubSubRejectsBadConfig(t *testing.T) {
 	for name, cfg := range map[string]Config{
 		"no project":          {Topic: "t"},
 		"no topic or sub":     {Project: "p"},
-		"both key sources":    {Project: "p", Topic: "t", ServiceAccountFile: "sa.json", ServiceAccountJSON: []byte("{}")},
+		"both key sources":    {Project: "p", Topic: "t", ServiceAccountFile: "sa.json", ServiceAccountJSON: "{}"},
 		"metadata plus a key": {Project: "p", Topic: "t", ServiceAccountFile: "sa.json", PreferMetadata: true},
 	} {
 		if _, err := NewGCPPubSub(context.Background(), cfg); !errors.Is(err, core.ErrMessaging) {

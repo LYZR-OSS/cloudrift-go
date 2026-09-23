@@ -112,13 +112,13 @@ func NewGCPPubSub(ctx context.Context, cfg Config) (*GCPPubSubBackend, error) {
 // means Application Default Credentials.
 func gcpClientOptions(cfg Config) ([]option.ClientOption, error) {
 	switch {
-	case cfg.ServiceAccountFile != "" && len(cfg.ServiceAccountJSON) > 0:
+	case cfg.ServiceAccountFile != "" && cfg.ServiceAccountJSON != "":
 		return nil, errors.New("set ServiceAccountFile or ServiceAccountJSON, not both")
-	case cfg.PreferMetadata && (cfg.ServiceAccountFile != "" || len(cfg.ServiceAccountJSON) > 0):
+	case cfg.PreferMetadata && (cfg.ServiceAccountFile != "" || cfg.ServiceAccountJSON != ""):
 		return nil, errors.New("PreferMetadata reads the attached service account from the metadata server; " +
 			"it cannot be combined with an explicit service account")
-	case len(cfg.ServiceAccountJSON) > 0:
-		return []option.ClientOption{option.WithAuthCredentialsJSON(option.ServiceAccount, cfg.ServiceAccountJSON)}, nil
+	case cfg.ServiceAccountJSON != "":
+		return []option.ClientOption{option.WithAuthCredentialsJSON(option.ServiceAccount, []byte(cfg.ServiceAccountJSON))}, nil
 	case cfg.ServiceAccountFile != "":
 		return []option.ClientOption{option.WithAuthCredentialsFile(option.ServiceAccount, cfg.ServiceAccountFile)}, nil
 	case cfg.PreferMetadata:

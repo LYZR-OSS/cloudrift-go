@@ -115,7 +115,9 @@ type Config struct {
 	Subscription       string
 	DeadLetterTopic    string // DeadLetter target; required for DeadLetter
 	ServiceAccountFile string // service-account JSON key file (default: ADC)
-	ServiceAccountJSON []byte // service-account JSON key held in memory
+	// ServiceAccountJSON is a service-account JSON key held in memory. A string,
+	// not []byte, so Config stays comparable (a slice field would break callers).
+	ServiceAccountJSON string
 	// PreferMetadata skips ADC and uses the metadata server's attached
 	// identity, so a stray GOOGLE_APPLICATION_CREDENTIALS cannot shadow it.
 	PreferMetadata bool
