@@ -1,5 +1,6 @@
 // Package cache provides a provider-neutral interface over Redis-compatible
-// caches: self-hosted Redis, AWS ElastiCache, and Azure Cache for Redis.
+// caches: self-hosted Redis, AWS ElastiCache, Azure Cache for Redis, and GCP
+// Memorystore for Redis.
 //
 // Construct a backend once at service startup via New (or a typed
 // New*From* constructor) and reuse it — the underlying client is
@@ -140,9 +141,9 @@ type Backend interface {
 
 // Config carries the union of provider/auth-method options. Only the fields
 // relevant to the chosen provider + auth method are read. TLS is a *bool so
-// that nil means "use the provider default" (false for self-hosted Redis,
-// true for ElastiCache and Azure Cache for Redis). Use core.Ptr(false) to
-// disable explicitly.
+// that nil means "use the provider default" (false for self-hosted Redis and
+// Memorystore, true for ElastiCache and Azure Cache for Redis). Use
+// core.Ptr(false) to disable explicitly.
 type Config struct {
 	// Common connection fields.
 	URL      string // full redis:// or rediss:// URL (redis from_url)
@@ -169,12 +170,15 @@ type Config struct {
 	TenantID     string // from_service_principal
 	ClientID     string // service principal app ID, or user-assigned MI client ID
 	ClientSecret string
+
+	// GCP Memorystore for Redis.
+	AuthString string // from_auth_string / from_server_ca_cert; empty with AUTH disabled
 }
 
 // New instantiates a cache backend.
 //
-// provider is "redis", "elasticache", or "azure_redis". authMethod names the
-// constructor to use, exactly as in the Python library:
+// provider is "redis", "elasticache", "azure_redis", or "memorystore".
+// authMethod names the constructor to use, exactly as in the Python library:
 //
 //	New(ctx, "redis", "from_url", Config{URL: "rediss://user:pass@host:6380/0"})
 //	New(ctx, "redis", "from_credentials", Config{Host: "localhost", Port: 6379})
@@ -182,6 +186,8 @@ type Config struct {
 //	New(ctx, "elasticache", "from_iam_auth", Config{Host: "...", Username: "...", Region: "us-east-1"})
 //	New(ctx, "azure_redis", "from_access_key", Config{Host: "...", AccessKey: "..."})
 //	New(ctx, "azure_redis", "from_managed_identity", Config{Host: "...", Username: "..."})
+//	New(ctx, "memorystore", "from_auth_string", Config{Host: "10.0.0.3", AuthString: "..."})
+//	New(ctx, "memorystore", "from_server_ca_cert", Config{Host: "10.0.0.3", CACerts: "/etc/ssl/ca.pem"})
 func New(ctx context.Context, provider, authMethod string, cfg Config) (Backend, error) {
 	switch provider {
 	case "redis":
@@ -211,8 +217,15 @@ func New(ctx context.Context, provider, authMethod string, cfg Config) (Backend,
 		case "from_service_principal":
 			return NewAzureRedisFromServicePrincipal(cfg)
 		}
+	case "memorystore":
+		switch authMethod {
+		case "from_auth_string":
+			return NewMemorystoreFromAuthString(cfg)
+		case "from_server_ca_cert":
+			return NewMemorystoreFromServerCACert(cfg)
+		}
 	default:
-		return nil, fmt.Errorf("%w: unknown cache provider %q (choose 'redis', 'elasticache', or 'azure_redis')",
+		return nil, fmt.Errorf("%w: unknown cache provider %q (choose 'redis', 'elasticache', 'azure_redis', or 'memorystore')",
 			core.ErrCache, provider)
 	}
 	return nil, fmt.Errorf("%w: provider %q has no auth method %q", core.ErrCache, provider, authMethod)

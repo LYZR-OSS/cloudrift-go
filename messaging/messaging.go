@@ -1,9 +1,9 @@
 // Package messaging provides a provider-neutral interface over point-to-point
-// cloud queues: AWS SQS and Azure Service Bus.
+// cloud queues: AWS SQS, Azure Service Bus, and Google Cloud Pub/Sub.
 //
 // Construct a backend once at service startup via New (or NewSQS /
-// NewAzureServiceBus) and reuse it — backends hold long-lived clients.
-// Release sockets at shutdown with Close.
+// NewAzureServiceBus / NewGCPPubSub) and reuse it — backends hold long-lived
+// clients. Release sockets at shutdown with Close.
 package messaging
 
 import (
@@ -62,9 +62,9 @@ type Backend interface {
 	// Delete acknowledges a message by its receipt handle.
 	Delete(ctx context.Context, receiptHandle string) error
 	// DeadLetter moves a received message to the dead-letter queue and
-	// acknowledges it. Azure Service Bus implements this natively; SQS has no
-	// per-message dead-letter API, so the backend emulates it by re-sending
-	// the body to the configured DLQ and deleting the original.
+	// acknowledges it. Azure Service Bus implements this natively; SQS and
+	// Pub/Sub have no per-message dead-letter API, so those backends emulate it
+	// by re-sending the body to the configured DLQ and deleting the original.
 	DeadLetter(ctx context.Context, receiptHandle, reason string) error
 	// GetQueueDepth returns the approximate number of waiting messages. This
 	// is an estimate: cloud queues report it asynchronously and it may lag
@@ -106,26 +106,45 @@ type Config struct {
 	TenantID                string
 	ClientID                string // service principal app ID, or user-assigned MI client ID
 	ClientSecret            string
+
+	// GCP Pub/Sub. A queue is a topic (send) plus a pull subscription
+	// (receive); set whichever halves the service uses. Topic, Subscription,
+	// and DeadLetterTopic take a bare ID or a full projects/... resource name.
+	Project            string
+	Topic              string
+	Subscription       string
+	DeadLetterTopic    string // DeadLetter target; required for DeadLetter
+	ServiceAccountFile string // service-account JSON key file (default: ADC)
+	// ServiceAccountJSON is a service-account JSON key held in memory. A string,
+	// not []byte, so Config stays comparable (a slice field would break callers).
+	ServiceAccountJSON string
+	// PreferMetadata skips ADC and uses the metadata server's attached
+	// identity, so a stray GOOGLE_APPLICATION_CREDENTIALS cannot shadow it.
+	PreferMetadata bool
 }
 
 // New instantiates a messaging backend.
 //
-// provider is "sqs" or "azure_bus". The auth method is inferred from which
-// credential fields are set, exactly as in the Python library:
+// provider is "sqs", "azure_bus", or "gcp_pubsub". The auth method is inferred
+// from which credential fields are set, exactly as in the Python library:
 //
 //	New(ctx, "sqs", Config{QueueURL: "https://sqs...", Region: "us-east-1"})  // IAM role / env
 //	New(ctx, "sqs", Config{QueueURL: "...", AWSAccessKeyID: "...", AWSSecretAccessKey: "..."})
 //	New(ctx, "azure_bus", Config{ConnectionString: "...", QueueName: "q"})
 //	New(ctx, "azure_bus", Config{FullyQualifiedNamespace: "ns.servicebus.windows.net",
 //	    QueueName: "q"})                                                      // managed identity
+//	New(ctx, "gcp_pubsub", Config{Project: "p", Topic: "jobs",
+//	    Subscription: "jobs-sub"})                                            // ADC / Workload Identity
 func New(ctx context.Context, provider string, cfg Config) (Backend, error) {
 	switch provider {
 	case "sqs":
 		return NewSQS(ctx, cfg)
 	case "azure_bus":
 		return NewAzureServiceBus(cfg)
+	case "gcp_pubsub":
+		return NewGCPPubSub(ctx, cfg)
 	}
-	return nil, fmt.Errorf("%w: unknown messaging provider %q (choose 'sqs' or 'azure_bus')",
+	return nil, fmt.Errorf("%w: unknown messaging provider %q (choose 'sqs', 'azure_bus', or 'gcp_pubsub')",
 		core.ErrMessaging, provider)
 }
 
